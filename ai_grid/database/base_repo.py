@@ -50,11 +50,16 @@ class BaseRepository:
         """Shared utility for resolving a nickname to a Character model within a session."""
         nick_lower = nick.lower()
         stmt = select(Character).join(Player).join(NetworkAlias).where(
-            func.lower(Character.name) == nick_lower,
             func.lower(NetworkAlias.nickname) == nick_lower,
             NetworkAlias.network_name == network
         ).options(selectinload(Character.current_node))
-        return (await session.execute(stmt)).scalars().first()
+        char = (await session.execute(stmt)).scalars().first()
+        if not char:
+            stmt2 = select(Character).where(
+                func.lower(Character.name) == nick_lower
+            ).options(selectinload(Character.current_node))
+            char = (await session.execute(stmt2)).scalars().first()
+        return char
 
     async def verify_presence(self, char: Character, target_node, command_label: str) -> tuple[bool, str]:
         """ Standardizes physical presence checks for grid interactions.

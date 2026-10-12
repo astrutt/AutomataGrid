@@ -129,6 +129,7 @@ class ArenaDB:
             async def remote_raid(self, *a, **k): return await self.db.remote_net.remote_raid(*a, **k)
             async def set_net_device_state(self, *a, **k): return await self.db.remote_net.set_net_device_state(*a, **k)
             async def is_node_pvp_pve_accessible(self, *a, **k): return await self.db.remote_net.is_node_pvp_pve_accessible(*a, **k)
+            async def check_territory_defense(self, *a, **k): return await self.db.territory.check_territory_defense(*a, **k)
 
         self.grid = GridFacade(self)
 
@@ -143,6 +144,7 @@ class ArenaDB:
             async def get_memos(self, *a, **k): return await self.db.comm.get_memos(*a, **k)
             async def complete_task(self, *a, **k): return await self.db.activity.complete_task(*a, **k)
             async def register_player(self, *a, **k): return await self.db.identity.register_player(*a, **k)
+            async def login_player(self, *a, **k): return await self.db.identity.login_player(*a, **k)
             async def authenticate_player(self, *a, **k): return await self.db.identity.authenticate_player(*a, **k)
             async def get_character_by_nick(self, *a, **k): return await self.db.identity.get_character_by_nick(*a, **k)
             async def list_players(self, *a, **k): return await self.db.character.list_players(*a, **k)
@@ -752,6 +754,7 @@ class ArenaDB:
     async def get_daily_tasks(self, name, network): return await self.activity.get_daily_tasks(name, network)
     async def complete_task(self, name, network, task_key): return await self.activity.complete_task(name, network, task_key)
     async def register_player(self, name, network, race, bot_class, bio, stats): return await self.identity.register_player(name, network, race, bot_class, bio, stats)
+    async def login_player(self, nick, network, name, key): return await self.identity.login_player(nick, network, name, key)
     async def get_player(self, name, network): return await self.character.get_player(name, network)
     async def authenticate_player(self, name, network, provided_token): return await self.identity.authenticate_player(name, network, provided_token)
     async def list_players(self, network=None): return await self.character.list_players(network)
@@ -782,6 +785,7 @@ class ArenaDB:
     async def tick_grid_power(self): return await self.grid.tick_grid_power()
     async def get_grid_telemetry(self): return await self.grid.get_grid_telemetry()
     async def rename_node(self, old, new): return await self.grid.rename_node(old, new)
+    async def check_territory_defense(self, nickname, network): return await self.grid.check_territory_defense(nickname, network)
     async def get_prefs_by_id(self, char_id): return await self.character.get_prefs_by_id(char_id)
     async def get_nickname_by_id(self, char_id): return await self.identity.get_nickname_by_id(char_id)
 

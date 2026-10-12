@@ -38,3 +38,24 @@ Check your current standing and heat anytime with:
 - **`Hostile` (-75 to -100)**: Merchants refuse to trade with you; 75% chance of defender security mobs spawning on entry.
 - **Passive Decay**: Reputation passively decays towards 0.0 at 1.0 pt/hr, and heat cools down at -0.5/hr during inactivity.
 
+## Combat & PvP Rules
+ 
+- **Forced Combat**:
+  1. Defending claimed nodes when the owner is present in the sector.
+  2. Warzone nodes (`[WAR]`) when multiple players enter the same coordinate.
+  3. PvE encounters where hostile mobs are present.
+- **Optional Open-World PvP**: In all other sectors, attacking another player issues a 30-second challenge:
+  - `!a engage` — accept the duel and initiate combat.
+  - `!a flee` — decline and retreat to safety without penalty.
+  - Doing nothing allows the challenge to safely expire after 30 seconds.
+- **Arena Matchmaking**:
+  - `!a queue` — enter the Arena match queue (available at `[ARN]`, claimed, or friendly nodes; requires account and active login).
+  - `!a ready` — confirm ready for match drop (only available when queued).
+
+## Session Authentication & Login
+
+If your IRC nickname is not registered with NickServ (`+r`), you can authenticate your character session using:
+- `!a login <name> <key>`
+
+Where `<key>` is the secret auth token returned to you during character registration.
+

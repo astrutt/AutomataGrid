@@ -643,3 +643,24 @@ class TerritoryRepository(BaseRepository):
             node.description = new_desc
             await session.commit()
             return True, f"Operation successful: Node architecture redefined."
+
+    async def check_territory_defense(self, nickname: str, network: str) -> tuple[bool, str | None, str | None]:
+        """Checks if character is hacking an owned node whose owner is currently present on that node."""
+        async with self.async_session() as session:
+            char = await self.get_character_by_nick(nickname, network, session)
+            curr_node = char.current_node if char else None
+
+            if curr_node and curr_node.owner_character_id and curr_node.owner_character_id != getattr(char, 'id', None):
+                owner_stmt = select(Character).where(
+                    Character.id == curr_node.owner_character_id,
+                    Character.node_id == curr_node.id
+                )
+                owner_char = (await session.execute(owner_stmt)).scalars().first()
+                if owner_char:
+                    alias_stmt = select(NetworkAlias.nickname).where(
+                        NetworkAlias.player_id == owner_char.player_id,
+                        NetworkAlias.network_name == network
+                    )
+                    owner_alias = (await session.execute(alias_stmt)).scalars().first()
+                    return True, owner_alias or owner_char.name, curr_node.name
+            return False, None, None

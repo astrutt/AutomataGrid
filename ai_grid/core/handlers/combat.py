@@ -2,6 +2,13 @@
 import asyncio
 import random
 import logging
+import time
+import uuid
+from sqlalchemy import func
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+from ai_grid.models import Character, Player, NetworkAlias, GridNode
+from ai_grid.grid_combat import CombatEngine, Entity
 from ai_grid.grid_utils import format_text, tag_msg, C_GREEN, C_CYAN, C_RED, C_YELLOW, C_WHITE
 from .base import is_machine_mode, check_rate_limit, get_action_routing
 
@@ -41,6 +48,10 @@ async def resolve_mob(node, nick: str, reply_target: str):
     if not hasattr(node, 'pending_encounters') or node.pending_encounters is None:
         return
     enc = node.pending_encounters.pop(nick, None)
+    if not enc:
+        matched_key = next((k for k in node.pending_encounters if k.lower() == nick.lower()), None)
+        if matched_key:
+            enc = node.pending_encounters.pop(matched_key, None)
     if not enc: return
     if enc.get('timer') and not enc['timer'].done():
         enc['timer'].cancel()
@@ -71,36 +82,288 @@ async def resolve_mob(node, nick: str, reply_target: str):
 
 from ai_grid.core.validation import validate_quantity
 
-async def handle_pvp_command(node, nickname: str, reply_target: str, action: str, target_name: str):
+async def start_pvp_combat(node, attacker_name: str, defender_name: str, action: str = "attack", defender_nick: str = None):
+    match_id = f"PVP_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+
+    auth_sessions = getattr(node, 'authenticated_sessions', {}) or {}
+    recipients = {attacker_name, defender_name}
+    if defender_nick:
+        recipients.add(defender_nick)
+    for nk, cn in auth_sessions.items():
+        if cn.lower() in [attacker_name.lower(), defender_name.lower()]:
+            recipients.add(nk)
+    async def combat_broadcast(msg: str):
+        chan = node.config.get('channel', '#arena') if hasattr(node, 'config') else '#arena'
+        if hasattr(node, 'send'):
+            await node.send(f"PRIVMSG {chan} :{msg}")
+            for p in recipients:
+                await node.send(f"PRIVMSG {p} :{msg}")
+
+    prefix = getattr(node, 'prefix', '!a')
+    engine = CombatEngine(match_id, prefix, combat_broadcast, llm=getattr(node, 'llm', None))
+
+    for name in [attacker_name, defender_name]:
+        db_stats = None
+        if hasattr(node, 'db') and hasattr(node.db, 'get_player'):
+            db_stats = await node.db.get_player(name, getattr(node, 'net_name', 'rizon'))
+        if not db_stats and hasattr(node, 'db') and hasattr(node.db, 'character'):
+            db_stats = await node.db.character.get_player(name, getattr(node, 'net_name', 'rizon'))
+        char_name = (db_stats.get('name') if isinstance(db_stats, dict) else None) or name
+        active_nick = next((nk for nk, cn in auth_sessions.items() if cn.lower() == char_name.lower()), None)
+        if name == defender_name and defender_nick:
+            nick = defender_nick
+        elif active_nick:
+            nick = active_nick
+        else:
+            nick = name
+        ent = Entity(name, db_stats or {})
+        ent.char_name = char_name
+        ent.nickname = nick
+        engine.add_entity(ent)
+        if char_name != name:
+            recipients.add(char_name)
+
+    engine.active = True
+    node.active_engine = engine
+
+    # Queue initial action for attacker
+    engine.queue_command(attacker_name, action)
+
+    chan = node.config.get('channel', '#arena') if hasattr(node, 'config') else '#arena'
+    if hasattr(node, 'send'):
+        await node.send(f"PRIVMSG {chan} :{tag_msg(f'COMBAT ENGAGED: {attacker_name} vs {defender_name}!', tags=['COMBAT'])}")
+
+    return engine
+
+async def resolve_pvp_challenge(node, nick: str, reply_target: str, accept: bool = True):
+    if not hasattr(node, 'pending_challenges') or node.pending_challenges is None:
+        return
+
+    from ai_grid.core.command_router import find_pending_challenge
+    target_key, challenge = find_pending_challenge(node, nick)
+    if not target_key or not challenge:
+        target_key = nick.lower()
+        challenge = node.pending_challenges.get(target_key)
+        if not challenge:
+            return
+
+    to_remove = [k for k, c in list(node.pending_challenges.items()) if c is challenge or k == target_key]
+    for k in to_remove:
+        node.pending_challenges.pop(k, None)
+
+    timer = challenge.get('timer')
+    if timer and not timer.done():
+        timer.cancel()
+
+    attacker = challenge['attacker']
+    defender_char = challenge.get('defender_char') or challenge.get('defender_nick') or challenge['defender']
+    defender_nick = challenge.get('defender_nick') or challenge['defender']
+    action = challenge.get('action', 'attack')
+    broadcast_chan = node.config.get('channel', '#arena') if hasattr(node, 'config') else '#arena'
+
+    if accept:
+        # Verify both players are still on the same node and not in a safezone
+        if hasattr(node, 'db') and hasattr(node.db, 'async_session'):
+            async with node.db.async_session() as session:
+                a_char = await node.db.get_character_by_nick(attacker, node.net_name, session) if hasattr(node.db, 'get_character_by_nick') else None
+                d_char = await node.db.get_character_by_nick(defender_nick, node.net_name, session) if hasattr(node.db, 'get_character_by_nick') else None
+                if not d_char and defender_char:
+                    d_char = await node.db.get_character_by_nick(defender_char, node.net_name, session) if hasattr(node.db, 'get_character_by_nick') else None
+                if a_char and d_char:
+                    if a_char.node_id != d_char.node_id:
+                        await node.send(f"PRIVMSG {reply_target} :[ERR] Engagement canceled: Attacker and defender are no longer in the same sector.")
+                        return
+                    if a_char.current_node and a_char.current_node.node_type == "safezone":
+                        await node.send(f"PRIVMSG {reply_target} :[ERR] Engagement canceled: Combat is prohibited in safezones.")
+                        return
+
+        # Mutually Agreed Combat
+        accept_msg = f"{defender_nick} accepted {attacker}'s engagement challenge! Combat initiated."
+        await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(accept_msg, action='COMBAT')}")
+        await start_pvp_combat(node, attacker, defender_char, action=action, defender_nick=defender_nick)
+    else:
+        # Disengage / Flee without combat loss
+        prev_node = challenge.get('prev_node')
+        if not prev_node and hasattr(node, 'db') and hasattr(node.db, 'async_session'):
+            async with node.db.async_session() as session:
+                spawn = (await session.execute(
+                    select(GridNode).where(GridNode.is_spawn_node == True)
+                )).scalars().first()
+                if not spawn:
+                    spawn = (await session.execute(
+                        select(GridNode).where(GridNode.node_type == "safezone")
+                    )).scalars().first()
+                if spawn:
+                    prev_node = spawn.name
+
+        if prev_node and hasattr(node.db, 'move_player_to_node'):
+            await node.db.move_player_to_node(defender_nick, node.net_name, prev_node)
+            if defender_char and defender_char.lower() != defender_nick.lower():
+                await node.db.move_player_to_node(defender_char, node.net_name, prev_node)
+
+        safe_loc = prev_node if prev_node else "safety"
+        await node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text(f'🏃 You declined the engagement and fled back to {safe_loc}.', C_CYAN), tags=['COMBAT', defender_nick])}")
+        await node.send(f"PRIVMSG {attacker} :{tag_msg(format_text(f'{defender_nick} declined the engagement and fled back to {safe_loc}.', C_YELLOW), tags=['COMBAT', attacker])}")
+        await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(f'{defender_nick} disengaged and fled from {attacker}.', C_CYAN), tags=['COMBAT'])}")
+
+async def handle_pvp_command(node, nickname: str, reply_target: str, action: str, target_name: str, challenge_timeout: int = 30):
     if await node.db.combat.is_pvp_banned(nickname, node.net_name):
         msg = "PvP lockout active. Re-stabilizing systems after surrender... (10m Cooldown)"
         await node.send(f"PRIVMSG {reply_target} :{tag_msg(msg, action='COMBAT', result='FAIL', nick=nickname)}")
         return
 
-    if not await check_rate_limit(node, nickname, reply_target, cooldown=30, consume=False, verb="pvp"): return
     private_target, broadcast_chan, machine_mode, reply_method = await get_action_routing(node, nickname, reply_target)
-    
-    res = None
-    if action == "attack": res = await node.db.grid_attack(nickname, target_name, node.net_name)
-    elif action == "hack": res = await node.db.grid_hack(nickname, target_name, node.net_name)
-    elif action == "rob": res = await node.db.grid_rob(nickname, target_name, node.net_name)
-    
-    if isinstance(res, (tuple, list)):
-        success = bool(res[0])
-        msg = str(res[1]) if len(res) > 1 else ""
-        reward = res[2] if len(res) > 2 else None
-    else:
-        success = False
-        msg = str(res or "Action failed.")
-        reward = None
-    
-    await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(msg, C_GREEN if success else C_RED, is_machine=machine_mode), action='COMBAT', result='SUCCESS' if success else 'FAIL', nick=nickname, is_machine=machine_mode)}")
-    
-    if success: 
-        if not machine_mode:
-            await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(msg, C_YELLOW), action='SIGACT', nick=nickname)}")
-        if reward:
-            await node.send(f"{reply_method} {private_target} :{tag_msg(reward, action='SIGACT', result='LOOT', nick=nickname, is_machine=machine_mode)}")
+
+    # 1. Fetch characters and current grid node with alias resolution & case insensitivity
+    async with node.db.async_session() as session:
+        async def resolve_char(name_or_nick: str):
+            stmt = select(Character).join(Player).join(NetworkAlias).where(
+                func.lower(NetworkAlias.nickname) == name_or_nick.lower(),
+                NetworkAlias.network_name == node.net_name
+            ).options(selectinload(Character.current_node))
+            c = (await session.execute(stmt)).scalars().first()
+            if not c:
+                stmt2 = select(Character).where(
+                    func.lower(Character.name) == name_or_nick.lower()
+                ).options(selectinload(Character.current_node))
+                c = (await session.execute(stmt2)).scalars().first()
+            return c
+
+        attacker = await resolve_char(nickname)
+        target = await resolve_char(target_name)
+        target_alias_nick = None
+        if target:
+            stmt_alias = select(NetworkAlias.nickname).where(
+                NetworkAlias.player_id == target.player_id,
+                NetworkAlias.network_name == node.net_name
+            )
+            target_alias_nick = (await session.execute(stmt_alias)).scalars().first()
+
+    if not attacker or not target:
+        await node.send(f"{reply_method} {private_target} :{tag_msg('Target not found on this network.', action='COMBAT', result='FAIL', nick=nickname, is_machine=machine_mode)}")
+        return
+    if attacker.id == target.id:
+        await node.send(f"{reply_method} {private_target} :{tag_msg('Self-termination is illogical.', action='COMBAT', result='FAIL', nick=nickname, is_machine=machine_mode)}")
+        return
+    if attacker.node_id != target.node_id:
+        await node.send(f"{reply_method} {private_target} :{tag_msg('You must be in the same Network Node as your target.', action='COMBAT', result='FAIL', nick=nickname, is_machine=machine_mode)}")
+        return
+
+    # Check active combat lock (Section 5: Engaged players are locked from third-party interference)
+    if getattr(node, 'active_engine', None) and node.active_engine.active:
+        if attacker.name in node.active_engine.entities or nickname.lower() in [e.lower() for e in node.active_engine.entities]:
+            await node.send(f"{reply_method} {private_target} :[ERR] You are locked in combat!")
+            return
+        if target.name in node.active_engine.entities or target_name.lower() in [e.lower() for e in node.active_engine.entities]:
+            await node.send(f"{reply_method} {private_target} :[ERR] Target is already locked in combat.")
+            return
+
+    curr_node = target.current_node
+    if not curr_node or curr_node.node_type == "safezone":
+        await node.send(f"{reply_method} {private_target} :{tag_msg('Combat is strictly prohibited in this zone.', action='COMBAT', result='FAIL', nick=nickname, is_machine=machine_mode)}")
+        return
+
+    # Check Forced Combat conditions
+    # Condition 1: Defending claimed territory with owner present
+    is_territory_defense = (curr_node.owner_character_id == target.id) and (target.node_id == curr_node.id)
+    # Condition 2: Warzone node
+    is_warzone = ((getattr(curr_node, 'region_type', None) or '').upper() == 'WAR') or ((getattr(curr_node, 'node_type', None) or '').lower() in ['war', 'warzone'])
+
+    # Determine defender active nickname
+    defender_nick = target_name
+    sess_nick = next((nk for nk, cn in getattr(node, 'authenticated_sessions', {}).items() if cn.lower() == target.name.lower()), None)
+    if sess_nick:
+        defender_nick = sess_nick
+    elif target_alias_nick:
+        defender_nick = target_alias_nick
+
+    if is_territory_defense or is_warzone:
+        if not await check_rate_limit(node, nickname, reply_target, cooldown=30, consume=False, verb="pvp"):
+            return
+        # Cancel any pending challenge timers for either participant
+        if hasattr(node, 'pending_challenges') and node.pending_challenges:
+            p_keys = {nickname.lower(), target_name.lower(), target.name.lower(), defender_nick.lower()}
+            to_cancel = [k for k, c in list(node.pending_challenges.items()) if k in p_keys or c.get('attacker', '').lower() in p_keys or c.get('defender', '').lower() in p_keys]
+            for k in to_cancel:
+                chal = node.pending_challenges.pop(k, None)
+                if chal and chal.get('timer') and not chal['timer'].done():
+                    chal['timer'].cancel()
+        reason = "TERRITORY_DEFENSE" if is_territory_defense else "WARZONE"
+        forced_msg = f"FORCED_COMBAT: Combat forced between {nickname} and {target.name} [{reason}]!"
+        await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(forced_msg, C_RED, bold=True, is_machine=machine_mode), action='COMBAT', result='FORCED', nick=nickname, is_machine=machine_mode)}")
+        await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(forced_msg, C_RED), action='COMBAT')}")
+        await start_pvp_combat(node, nickname, target.name, action=action, defender_nick=defender_nick)
+        return
+
+    # Optional Open-World PvP Flow
+    if not hasattr(node, 'pending_challenges') or node.pending_challenges is None:
+        node.pending_challenges = {}
+
+    # Check if target is busy with a mob
+    if target.name in getattr(node, 'pending_encounters', {}) or target_name in getattr(node, 'pending_encounters', {}):
+        await node.send(f"{reply_method} {private_target} :[ERR] Target is currently engaged in an active encounter.")
+        return
+
+    target_key = target.name.lower()
+    attacker_key = nickname.lower()
+
+    # Check existing challenges for either participant
+    for k, chal in (node.pending_challenges or {}).items():
+        if chal.get('attacker', '').lower() == attacker_key:
+            await node.send(f"{reply_method} {private_target} :[ERR] You already have a pending engagement challenge awaiting response.")
+            return
+        if chal.get('defender', '').lower() == attacker_key or chal.get('defender_nick', '').lower() == attacker_key or chal.get('defender_char', '').lower() == attacker_key:
+            await node.send(f"{reply_method} {private_target} :[ERR] You must respond to your pending challenge first (engage or flee).")
+            return
+        if k in (target_key, defender_nick.lower()) or chal.get('defender', '').lower() in (target_key, defender_nick.lower()) or chal.get('defender_nick', '').lower() in (target_key, defender_nick.lower()) or chal.get('defender_char', '').lower() in (target_key, defender_nick.lower()):
+            await node.send(f"{reply_method} {private_target} :[ERR] Target is already responding to an engagement challenge.")
+            return
+        if chal.get('attacker', '').lower() in (target_key, defender_nick.lower()):
+            await node.send(f"{reply_method} {private_target} :[ERR] Target is currently initiating another engagement challenge.")
+            return
+
+    if not await check_rate_limit(node, nickname, reply_target, cooldown=30, consume=False, verb="pvp"):
+        return
+
+    challenge_msg = f"ENGAGEMENT_CHALLENGE: {nickname} initiated combat against {defender_nick}. ENGAGE or FLEE? (30s)"
+    await node.send(f"PRIVMSG {defender_nick} :{tag_msg(format_text(challenge_msg, C_YELLOW, bold=True), action='COMBAT', nick=defender_nick)}")
+    if defender_nick.lower() != target.name.lower():
+        await node.send(f"PRIVMSG {target.name} :{tag_msg(format_text(challenge_msg, C_YELLOW, bold=True), action='COMBAT', nick=target.name)}")
+    await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(challenge_msg, C_YELLOW, is_machine=machine_mode), action='COMBAT', result='CHALLENGE', nick=nickname, is_machine=machine_mode)}")
+    if not machine_mode:
+        await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(challenge_msg, C_YELLOW), action='COMBAT')}")
+
+    # Safe timeout
+    async def auto_challenge_timeout():
+        try:
+            await asyncio.sleep(challenge_timeout)
+            pending = getattr(node, 'pending_challenges', {}) or {}
+            if pending.get(target_key, {}).get('timer') is asyncio.current_task():
+                to_pop = [k for k, c in pending.items() if c is challenge_data]
+                for k in to_pop:
+                    pending.pop(k, None)
+                timeout_msg = f"ENGAGEMENT_TIMEOUT: Engagement challenge between {nickname} and {defender_nick} expired safely."
+                await node.send(f"PRIVMSG {defender_nick} :{tag_msg(timeout_msg, action='COMBAT', result='TIMEOUT')}")
+                if defender_nick.lower() != target.name.lower():
+                    await node.send(f"PRIVMSG {target.name} :{tag_msg(timeout_msg, action='COMBAT', result='TIMEOUT')}")
+                await node.send(f"PRIVMSG {nickname} :{tag_msg(timeout_msg, action='COMBAT', result='TIMEOUT')}")
+                await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(timeout_msg, action='COMBAT', result='TIMEOUT')}")
+        except asyncio.CancelledError:
+            pass
+
+    timer = asyncio.create_task(auto_challenge_timeout())
+    challenge_data = {
+        'attacker': nickname,
+        'defender': defender_nick,
+        'defender_nick': defender_nick,
+        'defender_char': target.name,
+        'action': action,
+        'node_name': curr_node.name,
+        'prev_node': getattr(node, 'last_player_locations', {}).get(target_key, None) or getattr(node, 'last_player_locations', {}).get(defender_nick.lower(), None),
+        'timer': timer,
+        'reply_target': reply_target
+    }
+    node.pending_challenges[target_key] = challenge_data
 
 async def handle_grid_hack(node, nickname: str, reply_target: str, target_name: str):
     await handle_pvp_command(node, nickname, reply_target, "hack", target_name)
@@ -109,15 +372,42 @@ async def handle_grid_rob(node, nickname: str, reply_target: str, target_name: s
     await handle_pvp_command(node, nickname, reply_target, "rob", target_name)
 
 async def handle_ready(node, nick: str, token: str, reply_target: str):
-    if await node.db.authenticate_player(nick, node.net_name, token):
-        await node.db.set_pref(nick, node.net_name, 'output_mode', 'machine')
-        if nick not in node.ready_players:
-            node.ready_players.append(nick)
-            await node.send(f"PRIVMSG {reply_target} :{tag_msg('AUTH OK. Output Mode: MACHINE. Standby.', action='SIGACT', result='SUCCESS', nick=nick, is_machine=True)}")
-            await node.send(f"PRIVMSG {node.config['channel']} :{tag_msg(f'{nick} locked into the drop pod.', action='SIGACT')}")
+    # Check if in queue (case-insensitive)
+    queued_nicks = [x.lower() for x in (getattr(node, 'match_queue', []) + getattr(node, 'pending_fighters', []))]
+    if nick.lower() not in queued_nicks:
+        await node.send(f"PRIVMSG {reply_target} :[ERR] You must be in the queue to ready up. Use !a queue first.")
+        return
+
+    # Check authentication
+    is_auth = (
+        (hasattr(node, 'is_user_verified') and node.is_user_verified(nick))
+        or (nick.lower() in getattr(node, 'authenticated_users', set()))
+        or (nick.lower() in getattr(node, 'authenticated_sessions', {}))
+    )
+    if not is_auth:
+        if token and hasattr(node.db, 'authenticate_player') and await node.db.authenticate_player(nick, node.net_name, token):
+            if not hasattr(node, 'authenticated_users'):
+                node.authenticated_users = set()
+            node.authenticated_users.add(nick.lower())
+            is_auth = True
+        else:
+            await node.send(f"PRIVMSG {reply_target} :[ERR] Authentication required. Please log in first: !a login <name> <key>")
+            return
+
+    if not hasattr(node, 'ready_players'):
+        node.ready_players = []
+    if not any(p.lower() == nick.lower() for p in node.ready_players):
+        node.ready_players.append(nick)
+        await node.send(f"PRIVMSG {reply_target} :{tag_msg('AUTH OK. Output Mode: MACHINE. Standby.', action='SIGACT', result='SUCCESS', nick=nick, is_machine=True)}")
+        chan = node.config.get('channel', '#arena') if hasattr(node, 'config') else '#arena'
+        await node.send(f"PRIVMSG {chan} :{tag_msg(f'{nick} locked into the drop pod.', action='SIGACT')}")
+        if hasattr(node, 'check_match_start'):
             await node.check_match_start()
-    else:
-        await node.send(f"PRIVMSG {reply_target} :{tag_msg('AUTH FAIL. Cryptographic mismatch.', action='SIGACT', result='ERR', nick=nick)}")
+        if hasattr(node, 'db') and hasattr(node.db, 'set_pref'):
+            try:
+                await node.db.set_pref(nick, node.net_name, 'output_mode', 'machine')
+            except Exception:
+                pass
 
 async def handle_dice_roll(node, nick: str, args: list, reply_target: str):
     private_target, broadcast_chan, machine_mode, reply_method = await get_action_routing(node, nick, reply_target)

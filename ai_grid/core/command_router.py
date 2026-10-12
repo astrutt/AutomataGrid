@@ -12,8 +12,30 @@ from ai_grid.core.validation import (
     validate_nickname, validate_node_name, validate_direction,
     validate_item_name, validate_quantity, validate_token
 )
+from sqlalchemy import func
+from sqlalchemy.future import select
+from ai_grid.models import Character, Player, NetworkAlias, GridNode
 
 logger = logging.getLogger("manager")
+
+def find_pending_challenge(node, nick: str):
+    """Finds pending challenge matching nickname (via direct key, session, or defender name)."""
+    pending = getattr(node, 'pending_challenges', {}) or {}
+    nick_lower = nick.lower()
+    if nick_lower in pending:
+        return nick_lower, pending[nick_lower]
+    sess_char = getattr(node, 'authenticated_sessions', {}).get(nick_lower)
+    if sess_char and sess_char.lower() in pending:
+        return sess_char.lower(), pending[sess_char.lower()]
+    for k, chal in pending.items():
+        defender_names = [
+            chal.get('defender', '').lower(),
+            chal.get('defender_nick', '').lower(),
+            chal.get('defender_char', '').lower()
+        ]
+        if nick_lower in defender_names or (sess_char and sess_char.lower() in defender_names):
+            return k, chal
+    return None, None
 
 class CommandRouter:
     def __init__(self, node):
@@ -36,12 +58,19 @@ class CommandRouter:
 
         # 3. Active Combat Routing (prefixed or non-prefixed)
         active_engine = getattr(self.node, "active_engine", None)
-        in_active_combat = (
-            active_engine is not None
-            and getattr(active_engine, "active", False)
-            and source_nick in active_engine.entities
-            and active_engine.entities[source_nick].is_alive
-        )
+        combat_actor = None
+        if active_engine and getattr(active_engine, "active", False):
+            combat_actor = active_engine.get_entity(source_nick) if hasattr(active_engine, 'get_entity') else (
+                active_engine.entities.get(source_nick) or next((e for k, e in active_engine.entities.items() if k.lower() == source_nick.lower()), None)
+            )
+            if not combat_actor:
+                sess_char = getattr(self.node, 'authenticated_sessions', {}).get(source_nick.lower())
+                if sess_char:
+                    combat_actor = active_engine.get_entity(sess_char) if hasattr(active_engine, 'get_entity') else (
+                        active_engine.entities.get(sess_char) or next((e for k, e in active_engine.entities.items() if k.lower() == sess_char.lower()), None)
+                    )
+
+        in_active_combat = combat_actor is not None and combat_actor.is_alive
 
         if in_active_combat:
             candidate = msg.strip()
@@ -51,7 +80,7 @@ class CommandRouter:
             if parts:
                 verb_candidate = parts[0].lower()
                 if hasattr(active_engine, "is_combat_verb") and active_engine.is_combat_verb(verb_candidate):
-                    active_engine.queue_command(source_nick, msg)
+                    active_engine.queue_command(combat_actor.name, msg)
                     return
 
         # Handle Game Commands (prefixed with configured prefix or !a)
@@ -74,9 +103,11 @@ class CommandRouter:
                 if not await handlers.base.check_rate_limit(self.node, source_nick, reply_target, consume=True):
                     return
 
-            # 1. Registration
+            # 1. Registration & Authentication
             if verb == "register":
                 asyncio.create_task(handlers.handle_registration(self.node, source_nick, args, reply_target))
+            elif verb == "login":
+                asyncio.create_task(handlers.handle_login(self.node, source_nick, args, reply_target))
 
             # 2. Grid Navigation & Exploration
             elif verb == "grid":
@@ -259,42 +290,97 @@ class CommandRouter:
                 else:
                     await self.node.send(f"PRIVMSG {reply_target} :[ERR] Invalid target nickname '{target_nick}'.")
             elif verb == "engage":
-                pending = getattr(self.node, 'pending_encounters', {}) or {}
-                if source_nick in pending:
-                    asyncio.create_task(handlers.resolve_mob(self.node, source_nick, reply_target))
-                else: await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text('No enemy to engage.', C_RED), tags=['INFO', source_nick], nick=source_nick)}")
+                chal_key, chal = find_pending_challenge(self.node, source_nick)
+                pending_enc = getattr(self.node, 'pending_encounters', {}) or {}
+                if chal_key:
+                    asyncio.create_task(handlers.resolve_pvp_challenge(self.node, chal_key, reply_target, accept=True))
+                elif source_nick in pending_enc or source_nick.lower() in [k.lower() for k in pending_enc]:
+                    enc_key = source_nick if source_nick in pending_enc else next((k for k in pending_enc if k.lower() == source_nick.lower()), source_nick)
+                    asyncio.create_task(handlers.resolve_mob(self.node, enc_key, reply_target))
+                else:
+                    await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text('No enemy to engage.', C_RED), tags=['INFO', source_nick], nick=source_nick)}")
             elif verb == "flee":
-                pending = getattr(self.node, 'pending_encounters', {}) or {}
-                enc = pending.pop(source_nick, None)
-                if enc:
-                    if enc.get('timer') and not enc['timer'].done():
-                        enc['timer'].cancel()
-                    prev = enc.get('prev_node')
-                    if prev: await self.node.db.move_player_to_node(source_nick, self.node.net_name, prev)
-                    machine = await handlers.is_machine_mode(self.node, source_nick)
-                    if machine: await self.node.send(f"PRIVMSG {source_nick} :[MOB] RESULT:FLED NODE:{prev or 'unknown'}")
-                    else:
-                        safe_loc = prev if prev else "safety"
-                        await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text(f'🏃 You fled back to {safe_loc}.', C_CYAN), tags=['COMBAT', source_nick])}")
-                else: await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text('No active encounter to flee from.', C_RED), tags=['INFO', source_nick], nick=source_nick)}")
+                chal_key, chal = find_pending_challenge(self.node, source_nick)
+                pending_enc = getattr(self.node, 'pending_encounters', {}) or {}
+                if chal_key:
+                    asyncio.create_task(handlers.resolve_pvp_challenge(self.node, chal_key, reply_target, accept=False))
+                elif source_nick in pending_enc or source_nick.lower() in [k.lower() for k in pending_enc]:
+                    enc_key = source_nick if source_nick in pending_enc else next((k for k in pending_enc if k.lower() == source_nick.lower()), source_nick)
+                    enc = pending_enc.pop(enc_key, None)
+                    if enc:
+                        if enc.get('timer') and not enc['timer'].done():
+                            enc['timer'].cancel()
+                        prev = enc.get('prev_node')
+                        if not prev and hasattr(self.node, 'db') and hasattr(self.node.db, 'async_session'):
+                            async with self.node.db.async_session() as session:
+                                spawn = (await session.execute(
+                                    select(GridNode).where(GridNode.is_spawn_node == True)
+                                )).scalars().first()
+                                if not spawn:
+                                    spawn = (await session.execute(
+                                        select(GridNode).where(GridNode.node_type == "safezone")
+                                    )).scalars().first()
+                                if spawn:
+                                    prev = spawn.name
+                        if prev: await self.node.db.move_player_to_node(source_nick, self.node.net_name, prev)
+                        machine = await handlers.is_machine_mode(self.node, source_nick)
+                        if machine: await self.node.send(f"PRIVMSG {source_nick} :[MOB] RESULT:FLED NODE:{prev or 'unknown'}")
+                        else:
+                            safe_loc = prev if prev else "safety"
+                            await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text(f'🏃 You fled back to {safe_loc}.', C_CYAN), tags=['COMBAT', source_nick])}")
+                else:
+                    await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text('No active encounter to flee from.', C_RED), tags=['INFO', source_nick], nick=source_nick)}")
 
             # 6. Arena
             elif verb == "queue":
+                # 1. Check account registration
+                async with self.node.db.async_session() as session:
+                    char = await self.node.db.get_character_by_nick(source_nick, self.node.net_name, session) if hasattr(self.node.db, 'get_character_by_nick') else None
+                    if not char:
+                        stmt2 = select(Character).where(func.lower(Character.name) == source_nick.lower())
+                        char = (await session.execute(stmt2)).scalars().first()
+
+                if not char:
+                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Unregistered user. Please create an account first: !a register <name> <race> <class> <traits>")
+                    return
+
+                # 2. Check authentication status
+                is_auth = (
+                    (hasattr(self.node, 'is_user_verified') and self.node.is_user_verified(source_nick))
+                    or (source_nick.lower() in getattr(self.node, 'authenticated_users', set()))
+                    or (source_nick.lower() in getattr(self.node, 'authenticated_sessions', {}))
+                )
+                if not is_auth:
+                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Authentication required. Please log in first: !a login <name> <key>")
+                    return
+
+                # 3. Check eligible grid node location ([ARN], claimed, friendly)
                 loc = await self.node.db.get_location(source_nick, self.node.net_name)
-                if loc and loc['type'] == 'arena':
-                    if source_nick not in self.node.match_queue:
-                        self.node.match_queue.append(source_nick)
-                        sig = format_text(f"{source_nick} stepped into the Gladiator Queue!", C_YELLOW)
-                        reward = await self.node.db.player.complete_task(source_nick, self.node.net_name, "Queue in Arena")
-                        if reward: sig += f"\n{reward}"
-                        await self.node.send(f"PRIVMSG {self.node.config['channel']} :{tag_msg(sig, tags=['ARENA', 'SIGACT'])}")
-                    await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(f'{source_nick} queued. DM me: {prefix} ready <token>', tags=['ARENA', 'SIGACT', source_nick])}")
-                else: await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text(f'You must be in the Arena to queue.', C_RED), tags=['ARENA', 'SIGACT', source_nick])}")
+                if not loc and char:
+                    loc = await self.node.db.get_location(char.name, self.node.net_name)
+                if not loc:
+                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Queue only available at Arena [ARN], claimed nodes, or friendly nodes.")
+                    return
+
+                is_arn = ((loc.get('type') or '').lower() == 'arena') or ((loc.get('region_type') or '').upper() == 'ARN')
+                is_claimed = bool(loc.get('owner') and loc.get('owner').lower() not in ['unclaimed', 'none', ''])
+                is_friendly = ((loc.get('type') or '').lower() == 'safezone') or ((loc.get('region_type') or '').upper() in ['CIV', 'EDU', 'MED', 'ORG'])
+
+                if not (is_arn or is_claimed or is_friendly):
+                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Queue only available at Arena [ARN], claimed nodes, or friendly nodes.")
+                    return
+
+                if source_nick not in self.node.match_queue:
+                    self.node.match_queue.append(source_nick)
+                    sig = format_text(f"{source_nick} stepped into the Gladiator Queue!", C_YELLOW)
+                    reward = await self.node.db.player.complete_task(source_nick, self.node.net_name, "Queue in Arena")
+                    if reward: sig += f"\n{reward}"
+                    await self.node.send(f"PRIVMSG {self.node.config['channel']} :{tag_msg(sig, tags=['ARENA', 'SIGACT'])}")
+                await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(f'{source_nick} queued. Use {prefix} ready to confirm.', tags=['ARENA', 'SIGACT', source_nick])}")
+
             elif verb == "ready":
-                if args and validate_token(args[0]):
-                    asyncio.create_task(handlers.handle_ready(self.node, source_nick, args[0], reply_target))
-                else:
-                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Syntax: {prefix} ready <valid_token>")
+                token = args[0] if (args and validate_token(args[0])) else None
+                asyncio.create_task(handlers.handle_ready(self.node, source_nick, token, reply_target))
             elif verb in ["bet", "gamble"] or (verb == "arena" and args and args[0].lower() == "bet"):
                 bet_args = args[1:] if verb == "arena" else args
                 asyncio.create_task(handlers.handle_bet(self.node, source_nick, bet_args, reply_target))
@@ -356,9 +442,61 @@ class CommandRouter:
                             await self.node.send(f"PRIVMSG {reply_target} :[ERR] Access Denied.")
 
         # Handle Active Combat Commands (non-prefixed fallback)
-        elif self.node.active_engine and self.node.active_engine.active:
-            if source_nick in self.node.active_engine.entities and self.node.active_engine.entities[source_nick].is_alive:
-                self.node.active_engine.queue_command(source_nick, msg)
+        elif in_active_combat:
+            active_engine.queue_command(combat_actor.name, msg)
+
+        # Handle Non-Prefixed Special Verbs (engage, flee, login, ready)
+        else:
+            clean_msg = msg.strip()
+            parts = clean_msg.split()
+            if parts:
+                verb_candidate = parts[0].lower()
+                if verb_candidate == "engage":
+                    chal_key, chal = find_pending_challenge(self.node, source_nick)
+                    pending_enc = getattr(self.node, 'pending_encounters', {}) or {}
+                    if chal_key:
+                        asyncio.create_task(handlers.resolve_pvp_challenge(self.node, chal_key, reply_target, accept=True))
+                    elif source_nick in pending_enc or source_nick.lower() in [k.lower() for k in pending_enc]:
+                        enc_key = source_nick if source_nick in pending_enc else next((k for k in pending_enc if k.lower() == source_nick.lower()), source_nick)
+                        asyncio.create_task(handlers.resolve_mob(self.node, enc_key, reply_target))
+                    else:
+                        await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text('No enemy to engage.', C_RED), tags=['INFO', source_nick], nick=source_nick)}")
+                elif verb_candidate == "flee":
+                    chal_key, chal = find_pending_challenge(self.node, source_nick)
+                    pending_enc = getattr(self.node, 'pending_encounters', {}) or {}
+                    if chal_key:
+                        asyncio.create_task(handlers.resolve_pvp_challenge(self.node, chal_key, reply_target, accept=False))
+                    elif source_nick in pending_enc or source_nick.lower() in [k.lower() for k in pending_enc]:
+                        enc_key = source_nick if source_nick in pending_enc else next((k for k in pending_enc if k.lower() == source_nick.lower()), source_nick)
+                        enc = pending_enc.pop(enc_key, None)
+                        if enc:
+                            if enc.get('timer') and not enc['timer'].done():
+                                enc['timer'].cancel()
+                            prev = enc.get('prev_node')
+                            if not prev and hasattr(self.node, 'db') and hasattr(self.node.db, 'async_session'):
+                                async with self.node.db.async_session() as session:
+                                    spawn = (await session.execute(
+                                        select(GridNode).where(GridNode.is_spawn_node == True)
+                                    )).scalars().first()
+                                    if not spawn:
+                                        spawn = (await session.execute(
+                                            select(GridNode).where(GridNode.node_type == "safezone")
+                                        )).scalars().first()
+                                    if spawn:
+                                        prev = spawn.name
+                            if prev: await self.node.db.move_player_to_node(source_nick, self.node.net_name, prev)
+                            machine = await handlers.is_machine_mode(self.node, source_nick)
+                            if machine: await self.node.send(f"PRIVMSG {source_nick} :[MOB] RESULT:FLED NODE:{prev or 'unknown'}")
+                            else:
+                                safe_loc = prev if prev else "safety"
+                                await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text(f'🏃 You fled back to {safe_loc}.', C_CYAN), tags=['COMBAT', source_nick])}")
+                    else:
+                        await self.node.send(f"PRIVMSG {reply_target} :{tag_msg(format_text('No active encounter to flee from.', C_RED), tags=['INFO', source_nick], nick=source_nick)}")
+                elif verb_candidate == "login":
+                    asyncio.create_task(handlers.handle_login(self.node, source_nick, parts[1:], reply_target))
+                elif verb_candidate == "ready":
+                    token = parts[1] if (len(parts) > 1 and validate_token(parts[1])) else None
+                    asyncio.create_task(handlers.handle_ready(self.node, source_nick, token, reply_target))
 
     async def handle_spectator_session_command(self, source_nick: str):
         try:

@@ -33,11 +33,7 @@ class NavigationRepository(BaseRepository):
     async def get_claimed_nodes(self, name: str, network: str) -> int:
         """Returns the count of nodes owned by a character."""
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                Character.name == name,
-                NetworkAlias.network_name == network
-            )
-            char = (await session.execute(stmt)).scalars().first()
+            char = await self.get_character_by_nick(name, network, session)
             if not char: return 0
             
             count_stmt = select(func.count(GridNode.id)).where(GridNode.owner_character_id == char.id)
@@ -46,17 +42,12 @@ class NavigationRepository(BaseRepository):
 
     async def get_location(self, name: str, network: str):
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                Character.name == name,
-                NetworkAlias.nickname == name,
-                NetworkAlias.network_name == network
-            ).options(
-                selectinload(Character.current_node).selectinload(GridNode.owner)
-            )
-            result = await session.execute(stmt)
-            char = result.scalars().first()
+            char = await self.get_character_by_nick(name, network, session)
             if not char or not char.current_node:
                 return None
+            if char.current_node and not getattr(char.current_node, 'owner', None) and char.current_node.owner_character_id:
+                await session.refresh(char.current_node, ['owner'])
+
             
             node = char.current_node
             
@@ -116,15 +107,7 @@ class NavigationRepository(BaseRepository):
         """Move 1 sector in global coordinates."""
         move_cost = CONFIG.get('mechanics', {}).get('action_costs', {}).get('move', 1.0)
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                Character.name == name,
-                NetworkAlias.nickname == name,
-                NetworkAlias.network_name == network
-            ).options(
-                selectinload(Character.current_node)
-            )
-            res = await session.execute(stmt)
-            char = res.scalars().first()
+            char = await self.get_character_by_nick(name, network, session)
             if not char or not char.current_node: return None, "System offline."
             
             node = char.current_node
@@ -238,12 +221,7 @@ class NavigationRepository(BaseRepository):
 
     async def move_player_to_node(self, name: str, network: str, node_name: str) -> bool:
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                func.lower(Character.name) == name.lower(),
-                func.lower(NetworkAlias.nickname) == name.lower(),
-                NetworkAlias.network_name == network
-            )
-            char = (await session.execute(stmt)).scalars().first()
+            char = await self.get_character_by_nick(name, network, session)
             if not char: return False
             node = (await session.execute(
                 select(GridNode).where(GridNode.name == node_name)

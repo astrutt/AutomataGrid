@@ -59,16 +59,27 @@ The game follows a strict **5-Minute Window (300s TTL)** pipeline. Intelligence 
     - **Hardware**: Requires `NET` hardware for remote/networked raiding.
 
 ### 2. The PVP and PVE Combat Loop
-The game allows for player vs player/NPC, and player vs AI, and PVE combat on grid nodes and in the arena. 
+Combat occurs in the Arena node (`[ARN]`), from a friendly or claimed node via the queue, or as open-world encounters between players in the same grid node. 
 
-1. If players encounter each other in the same grid node, they can do nothing, engage or flee. 
-2. If players engage, they can attack (kinetic or cyber). If the other player fails to flee, the engagement starts. 
-3. Players engaged in combat can flee, attack or do nothing. 
-4. Players can attack each other using kinetic or cyber attacks. 
-5. Player attacks are based off CPU, RAM, BND, SEC and Character Power Stored.
-6. **Initiative**: Determined by `(CPU + RAM + BND + SEC) / 4 + roll(1-10)`. 
-7. Combat Turns are based off Initiative, and last 30 seconds.  
-8. Players in combat can use tactical actions which consume **Unit Power (uP)**:
+**Forced Combat Rules:**
+Forced combat occurs strictly under three conditions:
+1. **Defending Claimed Territory**: When an attacker attacks/hacks another player's claimed node while the owning player is physically present on that same grid node.
+2. **Warzones (`[WAR]`)**: When two players are present on the same grid node within a Warzone (`[WAR]`), combat is forced between them.
+3. **PVE Mobs**: When a player is present on a grid node where mobs are present (from events, MCP, or hostile region alerts), mobs attack and force combat.
+
+**Optional Open-World PvP:**
+In all other locations outside Warzones and claimed territory defense, open-world PvP is entirely optional:
+- An attack initiates an engagement challenge (`ENGAGEMENT_CHALLENGE: <Player A> initiated combat against <Player B>. ENGAGE or FLEE? (30s)`).
+- **`engage` (or `!a engage`)**: Mutually agrees to the duel and formally starts combat.
+- **`flee` (or `!a flee`)**: Declines the challenge and retreats back to the previous sector without loss.
+- **Timeout**: If no action is taken, the challenge expires safely after 30 seconds without forcing combat or penalizing the defender.
+
+**Arena Matchmaking Queue & Ready Gating:**
+- **`!a queue`**: Available from Arena (`[ARN]`), player-claimed nodes, or friendly nodes. Strictly requires that the player has an account and is authenticated (via NickServ `+r` or `!a login <name> <key>`).
+- **`!a ready`**: Strictly restricted to players who are currently in the queue; marks the player ready immediately without requiring a token parameter.
+
+**Combat Mechanics & Actions:**
+Combat turns are initiative-based (`(CPU + RAM + BND + SEC) / 4 + roll(1-10)`) lasting 30 seconds per turn. Tactical actions consume Unit Power (uP):
 
 | Action | Description | uP Cost | Base Formula |
 |--------|-------------|---------|--------------|
@@ -81,14 +92,10 @@ The game allows for player vs player/NPC, and player vs AI, and PVE combat on gr
 | **`surrender`**| Yield match | 0 | N/A |
 | **`use`** | Consume item | 5 | `(RAM + ALG) * 5` HP Restore |
 
-9. Combat continues until one player successfully flees, or is defeated, or surrenders.
-10. **Evasion**: Base evasion chance is `ALG * 1.0%`, capped at 60%. 
-11. **Criticals**: Critical hit chance is `ALG%`. Critical hits deal `200%` damage.
-12. Players can **`surrender`** from combat at any time by offering power/data. Surrendering invokes a 10-minute PvP ban.
-13. Defeated players lose all stored power/data and are ejected to the nearest spawn.
-14. Engaged players are locked from third-party interference.
-
-Combat currently uses temporary `Evading` and `Defending` stances. Timed effects such as `THROTTLED`, `CORRUPTED`, `ROOTED`, and `ENCRYPTED` are planned, not implemented.
+- **Evasion**: Base evasion chance is `ALG * 1.0%`, capped at 60%.
+- **Criticals**: Critical hit chance is `ALG%` dealing 200% damage.
+- **Surrender**: Surrendering invokes a 10-minute PvP ban.
+- **Resolution**: Defeated players lose stored power/data and are ejected to spawn. Engaged players are locked from third-party interference. Temporary stances (`Evading`, `Defending`) are active; timed effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`) remain planned.
 
 ---
 
@@ -107,7 +114,11 @@ Combat currently uses temporary `Evading` and `Defending` stances. Timed effects
     - **Scaling**: XP required for the next level follows an exponential curve: $XP\_Next = 100 \times 1.25^{(Level-1)}$.
     - **Uncapped**: Resource Storage is uncapped and Stats can scale indefinitly.
 
-- **Player Stability**: Actions consume Unit Power (uP). Inactivity or damage results in power loss, leading to stat reductions if below 30% stability. Stability decay is approximately **1% per 24h**. Recovery occurs hourly: **+5.0 Power / +2.0 Stability** in Safezones/Owned nodes, or **+2.0 Power / +0.5 Stability** in the Void. 
+- **Player Stability**: Actions consume Unit Power (uP). Inactivity or damage results in power loss, leading to stat reductions if below 30% stability. Stability decay is approximately **1% per 24h**. **Claimed Node Exemption**: Players idling on a node they own are completely exempt from stability decay. Recovery occurs hourly: **+5.0 Power / +2.0 Stability** in Safezones/Owned nodes, or **+2.0 Power / +0.5 Stability** in the Void. 
+
+- **Player Authentication & Login**:
+  - Registered NickServ nicknames (`+r`) are authenticated automatically.
+  - Players whose nicknames are not registered with NickServ can authenticate their session using **`!a login <name> <key>`** with their character's secret authentication key provided at registration. This binds their active session and authorizes gameplay commands. 
 
 - **Player Power**: Players can generate power solo and get a bonus on claimed grid nodes. Players can siphon power from hacked grid nodes, and their own grid nodes and networks. 
     - **Generation**: Automated power recovery happens in 60-minute maintenance cycles.
@@ -227,8 +238,8 @@ Incursions are high-priority network threats that manifest semi-randomly across 
 
 ## Current Scope and Gaps
 
-- **Implemented:** Spectator progression; full 50×50 procedural grid generation with 14 diverse region types, realistic clustering, dynamic IRC home node spawning, and expanded admin map controls; reputation and MCP heat system with automated passive decay, cross-type institutional consequences, and threshold-triggered world responses (merchant discounts/lockouts, IDS alert triggers, defender mob spawns); crafting and zero-day chains; eight trainable skills; node stash; NET remote operations; and incursion rewards.
-- **Planned / Future:** Timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`), bounty board system with posting and hunting flows, and remote node ownership claiming across NET bridges.
+- **Implemented:** Spectator progression; full 50×50 procedural grid generation with 14 diverse region types, realistic clustering, dynamic IRC home node spawning, and expanded admin map controls; reputation and MCP heat system with automated passive decay, cross-type institutional consequences, and threshold-triggered world responses (merchant discounts/lockouts, IDS alert triggers, defender mob spawns); forced combat rules (claimed territory defense, Warzones, PvE mobs) and optional open-world PvP challenges (`engage`, `flee`, timeout); `!a login <name> <key>` session authentication; Arena queue and ready gating; claimed node stability decay exemption; crafting and zero-day chains; eight trainable skills; node stash; NET remote operations; and incursion rewards.
+- **Planned / Future:** Timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`), bounty board system with posting and hunting flows, remote node ownership claiming across NET bridges, and the MCP Grid Messenger bot.
 
 ---
 *Maintained by Mech — implementation status reviewed October 2026*

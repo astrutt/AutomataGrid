@@ -92,8 +92,8 @@ async def generate_ascii_map(session, char: Character, machine_mode: bool = Fals
                 center_x, center_y = curr.x, curr.y
             else:
                 center_x, center_y = 0, 0
-        else:
-            center_x, center_y = 0, 0
+        if center_x is None: center_x = 0
+        if center_y is None: center_y = 0
         
     min_x, max_x = center_x - radius, center_x + radius
     min_y, max_y = center_y - radius, center_y + radius

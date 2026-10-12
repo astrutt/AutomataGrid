@@ -59,9 +59,10 @@ Spectators can idle and chat in the IRC channel where the game is played and gai
 
 ### 1. Player Registration
 
-Spectators can register as players using the `register` command. The player sends a registration request to the MCP, which returns their character stats, context, and an authentication key. The key is used for the Arena and login if the nick isn't registered with the IRC network's NickServ.
+Spectators can register as players using the `register` command. The player sends a registration request to the MCP, which returns their character stats, context, and an authentication key. The key is used for login if the nick isn't registered with the IRC network's NickServ.
 
-**`!a register <name> <race> <class> <traits>`**
+**`register <name> <race> <class> <traits>`**
+**`login <name> <key> `**
 
 | Field | Notes |
 |-------|-------|
@@ -89,9 +90,9 @@ AutomataGrid uses a configurable output system to ensure a level playing field b
 Every game command produces output in all three modes; the player's configured mode determines which is sent to them. Mode is set at registration and can be changed:
 
 ```
-options mode narrative
-options mode text
-options mode human
+!a options mode narrative
+!a options mode text
+!a options mode human
 ```
 
 ---
@@ -100,7 +101,7 @@ options mode human
 
 **Design target:** The Grid is a procedurally generated 50×50 map (2,500 nodes) with a varied set of regions, each with unique opportunities, targets, friends, enemies, and merchants. The current generator creates the 50×50 topology, but does not yet distribute the proposed region types across the map.
 
-**Planned population targets (not current map counts):**
+**Population targets (not current map counts):**
 ```
 Grid: 50x50 (2,500 nodes)
 Active nodes: ~700 (28%)
@@ -111,7 +112,7 @@ Active nodes: ~700 (28%)
 Empty nodes: ~1,800 (72%)
 ```
 
-**Planned Region and Target Types:**
+**Region and Target Types:**
 
 | Code | Name | Notes |
 |------|------|-------|
@@ -189,16 +190,31 @@ Remote operations require an owned node with NET hardware linked to the target n
 
 ### 5. The PVP and PVE Combat Loop
 
-Combat occurs in the Arena node (`[ARN]`), from a friendly or claimed node via the queue, or as open-world encounters between players in the same grid node. **No combat is forced** — players always choose to engage, flee, or do nothing. The same combat engine handles all three scenarios.
+Combat occurs in the Arena node (`[ARN]`), from a friendly or claimed node via the queue, or as open-world encounters between players in the same grid node.
 
-**Queue and Auth:**
+**Forced Combat Rules:**
+Forced combat occurs strictly under three conditions:
+1. **Defending Claimed Territory**: When an attacker attacks/hacks another player's claimed node while the owning player is present on that same grid node.
+2. **Warzones (`[WAR]`)**: When two players are present on the same grid node within a Warzone (`[WAR]`).
+3. **PVE**: When a player is in the same grid node where mobs are present, they may be attacked. Due to events, mcp, or other scenarios.
+
+**Optional Open-World PvP:**
+In all other locations, open-world PvP is entirely optional:
+- An attack initiates an engagement prompt / challenge.
+- Players can mutually agree to fight with `engage` (or `!a engage`).
+- Players can decline and disengage with `flee` (or `!a flee`).
+- If neither action is taken, the engagement request times out safely without forcing combat.
+
+The same combat engine handles all scenarios.
+
+**Arena Queue:**
 ```
-x queue          — enter the matchmaking queue
-x ready <token>  — authenticate and confirm ready (DM to bot)
+!a queue          — enter the matchmaking queue
+!a ready          — confirm ready
 ```
 Queue is available from: ARN nodes, player-claimed nodes, and friendly nodes.
 
-**Combat Actions:**
+**PVE, PVP Combat Actions:**
 
 | Action | Description | uP Cost | Base Formula |
 |--------|-------------|---------|--------------|
@@ -246,9 +262,9 @@ These effects are design proposals. Current combat supports temporary action sta
 |------|------|
 | **CPU** | HP, stability, physical and cyber damage |
 | **RAM** | HP, stability, physical and cyber damage |
-| **BND** | Initiative, exfiltration speed, cyber defense/offense |
-| **SEC** | Defense and cyber offense |
-| **ALG** | CPU and RAM efficiency; evasion and crit chance |
+| **BND** | Initiative, exfiltration speed, cyber defense/offense | Bandwidth
+| **SEC** | Defense and cyber offense | Security
+| **ALG** | CPU and RAM efficiency; evasion and crit chance | Algorithm
 
 ### Resources
 
@@ -277,7 +293,7 @@ uP is the fuel for everything — combat actions, exploration, defense from dama
 
 **Stability:**
 
-Actions consume uP. Below 30% stability, stats begin to reduce. Stability decays toward 0% if uP reaches 0 and the player is inactive. Idling at a node prevents decay.
+Actions consume uP. Below 30% stability, stats begin to reduce. Stability decays toward 0% if uP reaches 0 and the player is inactive. Idling at a claimed node prevents decay.
 
 ### Scaling & Progression
 
@@ -374,9 +390,9 @@ MCP Heat is a separate 0–10 track. Actions can update it and the game reports 
 
 | Path | Strategy | Benefit |
 |------|----------|---------|
-| **Grid Ally** | Patch MCP nodes, defend incursions, maintain high reps | Merchant discounts, intel, MCP assistance in combat |
-| **Grid Ghost** | Diversify targets, keep heat low, stay moving | No single type reaches Hostile; avoids bounties |
-| **Grid Villain** | Maximize aggression, embrace the heat | Highest raw loot yield; most dangerous lifestyle |
+| **Grid Ally** | Patch MCP nodes, defend incursions, maintain high reps | Merchant discounts, intel, MCP assistance in combat | Whitehat
+| **Grid Ghost** | Diversify targets, keep heat low, stay moving | No single type reaches Hostile; avoids bounties | Greyhat
+| **Grid Villain** | Maximize aggression, embrace the heat | Highest raw loot yield; most dangerous lifestyle | Blackhat
 
 ---
 
@@ -444,12 +460,12 @@ Remote operations follow the same 7-step loop as local ops, with distance modifi
 
 | Phase | Command | Detection Risk | Modifier |
 |-------|---------|---------------|----------|
-| Discover | `net <network> explore` | None | −20% yield (remote dampening) |
-| PreBreach | `net <network> probe <target>` | Low | Normal |
-| Breach | `net <network> hack <target>` | Medium | +20% difficulty (latency penalty) |
-| Exfil | `net <network> siphon <target>` | High | −10% yield |
-| Zero-Day | `net <network> exploit <target>` | Very High | Normal (true damage ignores distance) |
-| Raid | `net <network> raid <target>` | High | −20% yield |
+| Discover | `grid net <network> explore` | None | −20% yield (remote dampening) |
+| PreBreach | `grid net <network> probe <target>` | Low | Normal |
+| Breach | `grid net <network> hack <target>` | Medium | +20% difficulty (latency penalty) |
+| Exfil | `grid net <network> siphon <target>` | High | −10% yield |
+| Zero-Day | `grid net <network> exploit <target>` | Very High | Normal (true damage ignores distance) |
+| Raid | `grid net <network> raid <target>` | High | −20% yield |
 
 **Detection on remote operations** notifies the target node's owner on *their* IRC network's channel — not the attacker's. A skilled attacker on 2600net can raid a Rizon node without being broadcast on 2600net, but the Rizon owner sees it.
 
@@ -464,11 +480,13 @@ Cross-network PvP uses the same combat engine and turn timer as local combat. Ne
 
 ### NET Messaging
 
-The planned NET messaging flow uses the player's installed NET device. A player operates from an owned node whose NET device is `OPEN` and connected to an `OPEN` grid node on the destination network, then sends a message to a channel or user on that network.
+The NET messaging flow uses the player's installed NET device. A player operates from an owned node whose NET device is `OPEN` and connected to an `OPEN` grid node on the destination network, then sends a message to a channel or user on that network.
 
 ```
-net <network> msg <message>                        — broadcast via the connected network bot
-net <network> msg <channel> <nick> [message]       — post to a channel and message a user
+grid net <network> msg <message>
+      — sends message to the remote irc channel
+grid net <network> msg <nick> [message]
+      — sends message to the remote irc user
 ```
 
 ### Remote Node Ownership Claiming (Planned for Later)
@@ -476,7 +494,7 @@ net <network> msg <channel> <nick> [message]       — post to a channel and mes
 When a target node on a remote network is configured as `CLOSED` (or defended by a rival owner), a player operating across an active `NET` bridge must attack and breach the node first. 
 
 As a planned expansion:
-- Once a remote `CLOSED` node is successfully compromised via `net <network> hack <target>` (or neutralizes rival defense), the attacking player can execute a remote claim or seizure (`net <network> claim <target>`).
+- Once a remote `CLOSED` node is successfully compromised via `grid net <network> hack <target>` (or neutralizes rival defense), the attacking player can execute a remote claim or seizure (`grid net <network> claim <target>`).
 - Successful seizure transfers node ownership (`owner_character_id`) to the remote attacker, allowing them to reconfigure its NET device state (to `OPEN` or `CLOSED`), manage local devices, or establish an outpost on the foreign network without having to physically migrate coordinates.
 
 ### MCP Grid Messenger (Planned; Separate from NET)

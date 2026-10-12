@@ -59,6 +59,34 @@ async def handle_registration(node, nick: str, args: list, reply_target: str):
         logger.exception("Error in registration")
         await node.send(f"PRIVMSG {reply_target} :{tag_msg('CRITICAL ERROR in registration sequence.', action='SIGACT', result='ERR')}")
 
+async def handle_login(node, nick: str, args: list, reply_target: str):
+    """
+    Session Authentication for players whose nick is not registered with NickServ.
+    Syntax: login <name> <key>
+    """
+    try:
+        private_target, broadcast_chan, machine_mode, reply_method = await get_action_routing(node, nick, reply_target)
+        if len(args) < 2:
+            await node.send(f"{reply_method} {private_target} :[ERR] Syntax: !a login <name> <key>")
+            return
+
+        char_name = args[0]
+        key = args[1]
+        success, msg, char = await node.db.login_player(nick, node.net_name, char_name, key)
+        if success:
+            if not hasattr(node, 'authenticated_users'):
+                node.authenticated_users = set()
+            node.authenticated_users.add(nick.lower())
+            if not hasattr(node, 'authenticated_sessions'):
+                node.authenticated_sessions = {}
+            node.authenticated_sessions[nick.lower()] = char.name
+            await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='AUTH', result='SUCCESS', nick=nick, is_machine=machine_mode)}")
+        else:
+            await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='AUTH', result='FAIL', nick=nick, is_machine=machine_mode)}")
+    except Exception:
+        logger.exception("Error in login sequence")
+        await node.send(f"PRIVMSG {reply_target} :[ERR] Error in authentication sequence.")
+
 async def handle_tasks_view(node, nickname: str, reply_target: str):
     tasks_json = await node.db.get_daily_tasks(nickname, node.net_name)
     tasks = json.loads(tasks_json)

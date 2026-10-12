@@ -60,6 +60,8 @@ class Entity:
         self.is_npc = is_npc
         if db_record is None:
             db_record = {}
+        self.char_name = kwargs.get('char_name') or (db_record.get('name') if isinstance(db_record, dict) else getattr(db_record, 'name', None)) or name
+        self.nickname = kwargs.get('nickname') or name
         # v1.8.0: Starting stats are 1
         self.cpu = kwargs.get('cpu', db_record.get('cpu', 1))
         self.ram = kwargs.get('ram', db_record.get('ram', 1))
@@ -129,6 +131,20 @@ class CombatEngine:
         v = verb.lower()
         return any(v in aliases for aliases in self.verb_map.values())
 
+    def get_entity(self, name: str):
+        if not name:
+            return None
+        if name in self.entities:
+            return self.entities[name]
+        name_low = name.lower()
+        for k, ent in self.entities.items():
+            if k.lower() == name_low:
+                return ent
+        for ent in self.entities.values():
+            if getattr(ent, 'char_name', '').lower() == name_low or getattr(ent, 'nickname', '').lower() == name_low:
+                return ent
+        return None
+
     def add_entity(self, entity: Entity):
         self.entities[entity.name] = entity
         logger.info(f"Added {entity.name} to match {self.match_id}")
@@ -144,7 +160,8 @@ class CombatEngine:
         return raw_state
 
     def queue_command(self, entity_name: str, raw_command: str):
-        if entity_name not in self.entities or not self.entities[entity_name].is_alive: 
+        actor = self.get_entity(entity_name)
+        if not actor or not actor.is_alive:
             logger.debug(f"Command ignored: {entity_name} is dead or not in match.")
             return
         
@@ -169,8 +186,8 @@ class CombatEngine:
                 action_intent = intent
                 break
                 
-        self.entities[entity_name].command_queued = {"intent": action_intent, "raw_verb": verb, "args": args}
-        logger.info(f"Command Queued | {entity_name} -> [{action_intent}] '{verb}' args: '{args}'")
+        actor.command_queued = {"intent": action_intent, "raw_verb": verb, "args": args}
+        logger.info(f"Command Queued | {actor.name} -> [{action_intent}] '{verb}' args: '{args}'")
 
     async def resolve_turn(self):
         logger.info(f"--- Resolving Turn {self.turn} for Match {self.match_id} ---")

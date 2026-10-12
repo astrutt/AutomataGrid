@@ -89,6 +89,8 @@ class GridNode:
         }
         self.pending_registrations = {} 
         self.nickserv_verified = set()  
+        self.authenticated_users = set()
+        self.authenticated_sessions = {}
         self._nickserv_identified = False
         self.hype_counter = 0
         self.router = CommandRouter(self)
@@ -107,6 +109,7 @@ class GridNode:
             raw_admins = [x.strip() for x in raw_admins.split(',')]
         self.admins = [a.lower() for a in raw_admins]
         self.pending_encounters = {}
+        self.pending_challenges = {}
         self.admin_sessions = {}  # nick_lower -> expires_at_timestamp (float)
 
     @property
@@ -119,6 +122,11 @@ class GridNode:
 
     def is_user_verified(self, nick: str) -> bool:
         return nick.lower() in self.nickserv_verified
+
+    def is_authenticated(self, nick: str) -> bool:
+        if self.is_user_verified(nick):
+            return True
+        return nick.lower() in getattr(self, 'authenticated_users', set())
 
     def _handle_numeric(self, numeric: str, args: list):
         if numeric in ["307", "330"]:

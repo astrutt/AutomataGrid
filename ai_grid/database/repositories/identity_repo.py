@@ -1,4 +1,5 @@
 # database/repositories/identity_repo.py
+from __future__ import annotations
 import json
 import datetime
 import uuid
@@ -97,9 +98,36 @@ class IdentityRepository(BaseRepository):
         """Verifies character ownership via auth token."""
         async with self.async_session() as session:
             char = await self.get_character_by_nick(name, network, session)
+            if not char:
+                stmt = select(Character).where(func.lower(Character.name) == name.lower())
+                char = (await session.execute(stmt)).scalars().first()
             if char and char.auth_token == provided_token:
                 return True
             return False
+
+    async def login_player(self, nick: str, network: str, name: str, key: str) -> tuple[bool, str, Character | None]:
+        """Authenticates character ownership via auth token and binds to active IRC nickname."""
+        async with self.async_session() as session:
+            stmt = select(Character).where(func.lower(Character.name) == name.lower())
+            char = (await session.execute(stmt)).scalars().first()
+            if not char:
+                return False, f"[ERR] Character '{name}' not found.", None
+            if char.auth_token != key:
+                return False, "[ERR] Invalid authentication key.", None
+
+            # Bind character to active nickname / network alias
+            alias_stmt = select(NetworkAlias).where(
+                func.lower(NetworkAlias.nickname) == nick.lower(),
+                NetworkAlias.network_name == network
+            )
+            alias = (await session.execute(alias_stmt)).scalars().first()
+            if alias:
+                alias.player_id = char.player_id
+            else:
+                session.add(NetworkAlias(player_id=char.player_id, network_name=network, nickname=nick))
+
+            await session.commit()
+            return True, f"[AUTH OK] Authenticated session for {char.name}. Session bound to {nick}.", char
 
     async def get_nickname_by_id(self, char_id: int) -> str | None:
         """Retrieves character name by character ID."""

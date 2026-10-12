@@ -8,9 +8,11 @@ from ai_grid.models import Character, Player, NetworkAlias, GridNode, InventoryI
 from ai_grid.database.core import logger, MOB_ROSTER, LOOT_TABLE, CONFIG, increment_daily_task
 from ai_grid.grid_utils import calculate_elo_change
 
-class CombatRepository:
+from ai_grid.database.base_repo import BaseRepository
+
+class CombatRepository(BaseRepository):
     def __init__(self, async_session):
-        self.async_session = async_session
+        super().__init__(async_session)
         self.MOB_ROSTER = MOB_ROSTER
 
     async def _eject_character(self, session, char):
@@ -29,11 +31,7 @@ class CombatRepository:
     async def is_pvp_banned(self, nickname: str, network: str) -> bool:
         """v1.8.0: Checks if a player is under a 10-minute PvP ban from surrendering."""
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                Character.name == nickname,
-                NetworkAlias.network_name == network
-            )
-            char = (await session.execute(stmt)).scalars().first()
+            char = await self.get_character_by_nick(nickname, network, session)
             if char and char.last_surrender:
                 diff = (datetime.now(timezone.utc) - char.last_surrender.replace(tzinfo=timezone.utc)).total_seconds()
                 if diff < 600: # 10 minutes
@@ -42,17 +40,8 @@ class CombatRepository:
 
     async def record_match_result(self, winner_name: str, loser_name: str, network: str, was_surrender: bool = False, winner_up: float = None, loser_up: float = None):
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                Character.name.in_([winner_name, loser_name]),
-                NetworkAlias.network_name == network
-            )
-            result = await session.execute(stmt)
-            chars = result.scalars().all()
-            
-            winner, loser = None, None
-            for c in chars:
-                if c.name == winner_name: winner = c
-                if c.name == loser_name: loser = c
+            winner = await self.get_character_by_nick(winner_name, network, session)
+            loser = await self.get_character_by_nick(loser_name, network, session)
             
             if winner and loser:
                 # v1.8.0: Combat Rewards
@@ -105,12 +94,19 @@ class CombatRepository:
 
         async with self.async_session() as session:
             stmt = select(Character).join(Player).join(NetworkAlias).where(
-                func.lower(Character.name) == name.lower(),
-                # Fix: Use char.name for match, not alias which might be different
-                func.lower(NetworkAlias.nickname) == name.lower(), 
+                func.lower(NetworkAlias.nickname) == name.lower(),
                 NetworkAlias.network_name == network
-            ).options(selectinload(Character.inventory).selectinload(InventoryItem.template))
+            ).options(
+                selectinload(Character.inventory).selectinload(InventoryItem.template)
+            )
             char = (await session.execute(stmt)).scalars().first()
+            if not char:
+                stmt2 = select(Character).where(
+                    func.lower(Character.name) == name.lower()
+                ).options(
+                    selectinload(Character.inventory).selectinload(InventoryItem.template)
+                )
+                char = (await session.execute(stmt2)).scalars().first()
             if not char:
                 return {"error": "Character not found"}
 

@@ -49,16 +49,22 @@ class CharacterRepository(BaseRepository):
         async with self.async_session() as session:
             name_lower = name.lower()
             stmt = select(Character).join(Player).join(NetworkAlias).where(
-                func.lower(Character.name) == name_lower,
                 func.lower(NetworkAlias.nickname) == name_lower,
                 NetworkAlias.network_name == network
             ).options(
                 selectinload(Character.inventory).selectinload(InventoryItem.template),
                 selectinload(Character.skills)
             )
-            
             result = await session.execute(stmt)
             char = result.scalars().first()
+            if not char:
+                stmt2 = select(Character).where(
+                    func.lower(Character.name) == name_lower
+                ).options(
+                    selectinload(Character.inventory).selectinload(InventoryItem.template),
+                    selectinload(Character.skills)
+                )
+                char = (await session.execute(stmt2)).scalars().first()
             
             territory_count, mesh_power = 0, 0
             if char:

@@ -113,17 +113,26 @@ class MaintenanceRepository(BaseRepository):
             
             stmt = select(Character).join(Player).join(NetworkAlias).where(
                 NetworkAlias.network_name == network
-            ).options(selectinload(Character.current_node))
+            ).distinct().options(
+                selectinload(Character.current_node),
+                selectinload(Character.player).selectinload(Player.aliases)
+            )
             result = await session.execute(stmt)
-            characters = result.scalars().all()
+            characters = result.scalars().unique().all()
             
+            idlers_lower = {i.lower() for i in idlers}
             for char in characters:
-                # Apply base stability decay
-                char.stability = max(0.0, char.stability - (char.stability * decay_rate))
+                alias_nicks = [a.nickname.lower() for a in char.player.aliases if a.network_name == network] if (char.player and char.player.aliases) else []
+                is_idling = (char.name.lower() in idlers_lower) or any(a in idlers_lower for a in alias_nicks)
+                node = char.current_node
+                is_claimed_owner_idle = is_idling and node and (node.owner_character_id == char.id)
+
+                # Apply base stability decay unless idling at a claimed node
+                if not is_claimed_owner_idle:
+                    char.stability = max(0.0, char.stability - (char.stability * decay_rate))
                 
                 # Recovery for active idlers
-                if char.name in idlers:
-                    node = char.current_node
+                if is_idling:
                     is_safe = node and (node.node_type == 'safezone' or node.owner_character_id == char.id)
                     
                     if is_safe:

@@ -2,7 +2,12 @@
 import random
 import logging
 import json
+import inspect
 from typing import Optional
+from sqlalchemy import func
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+from ai_grid.models import Character, Player, NetworkAlias, GridNode
 from ai_grid.grid_utils import format_text, tag_msg, C_GREEN, C_CYAN, C_RED, C_YELLOW, C_WHITE
 from ..map_utils import generate_ascii_map
 from .base import is_machine_mode, check_rate_limit, get_action_routing
@@ -13,32 +18,70 @@ async def handle_grid_movement(node, nick: str, direction: str, reply_target: st
     from .combat import handle_mob_encounter
     prev_node = None
     loc = await node.db.get_location(nick, node.net_name)
-    if loc: prev_node = loc['name']
+    if loc:
+        prev_node = loc.get('name') if isinstance(loc, dict) else getattr(loc, 'name', None)
     
     private_target, broadcast_chan, machine_mode, reply_method = await get_action_routing(node, nick, reply_target)
     
     node_name, msg = await node.db.move_player(nick, node.net_name, direction)
     if node_name:
+        node_str = node_name.get('name') if isinstance(node_name, dict) else (getattr(node_name, 'name', None) or str(node_name))
         # Structured machine report
-        await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='MOVEMENT', result='MOVED', nick=nick, source=prev_node, destination=node_name, is_machine=machine_mode)}")
+        await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='MOVEMENT', result='MOVED', nick=nick, source=prev_node, destination=node_str, is_machine=machine_mode)}")
         
         if not machine_mode:
             # Public atmospheric narrative
             adjective = random.choice(["traversed", "navigated", "maneuvered", "shifted"])
-            target_node = format_text(node_name, C_WHITE, bold=True)
+            target_node = format_text(node_str, C_WHITE, bold=True)
             narrative = f"{nick} {adjective} {direction} towards {target_node}."
-            await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(narrative, C_CYAN), action='TRAVEL', nick=nick, source=prev_node, destination=node_name)}")
+            await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(narrative, C_CYAN), action='TRAVEL', nick=nick, source=prev_node, destination=node_str)}")
         
-        # Threshold-triggered defender mob encounter on node entry
+        if prev_node:
+            if not hasattr(node, 'last_player_locations') or node.last_player_locations is None:
+                node.last_player_locations = {}
+            node.last_player_locations[nick.lower()] = prev_node
+
+        # Threshold-triggered defender mob encounter or Warzone player encounter on node entry
         try:
             loc = await node.db.get_location(nick, node.net_name)
             reg = (loc.get('region_type') if loc else None) or (loc.get('type') if loc else None)
             enc = await node.db.check_defender_spawn(nick, node.net_name, region_type=reg)
             if enc.get('spawn'):
                 threat = enc.get('threat', 1)
-                await handle_mob_encounter(node, nick, node_name, threat, prev_node, reply_target)
+                await handle_mob_encounter(node, nick, node_str, threat, prev_node, reply_target)
+            elif loc and (((loc.get('region_type') or '').upper() == 'WAR') or ((loc.get('type') or '').lower() in ['war', 'warzone'])):
+                # Warzone forced player encounter
+                if hasattr(node.db, 'async_session') and (not getattr(node, 'active_engine', None) or not node.active_engine.active):
+                    async with node.db.async_session() as session:
+                        char = await node.db.get_character_by_nick(nick, node.net_name, session) if hasattr(node.db, 'get_character_by_nick') else None
+                        char_id = char.id if char else None
+                        player_id = char.player_id if char else None
+                        other_stmt = select(Character).join(GridNode, Character.node_id == GridNode.id).where(
+                            GridNode.name == node_str
+                        ).options(selectinload(Character.player).selectinload(Player.aliases))
+                        if char_id:
+                            other_stmt = other_stmt.where(Character.id != char_id)
+                        else:
+                            other_stmt = other_stmt.where(func.lower(Character.name) != nick.lower())
+                        if player_id:
+                            other_stmt = other_stmt.where(Character.player_id != player_id)
+                        other_chars = (await session.execute(other_stmt)).scalars().all()
+                    if other_chars:
+                        other_char = other_chars[0]
+                        auth_sessions = getattr(node, 'authenticated_sessions', {}) or {}
+                        other_nick = next((nk for nk, cn in auth_sessions.items() if cn.lower() == other_char.name.lower()), None)
+                        if not other_nick and other_char.player and other_char.player.aliases:
+                            net_alias = next((a.nickname for a in other_char.player.aliases if a.network_name == node.net_name), None)
+                            if net_alias:
+                                other_nick = net_alias
+                        if not other_nick:
+                            other_nick = other_char.name
+                        from .combat import start_pvp_combat
+                        forced_msg = f"FORCED_COMBAT: Warzone encounter between {nick} and {other_nick} in {node_str} [WARZONE]!"
+                        await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(forced_msg, C_RED, bold=True), action='COMBAT')}")
+                        await start_pvp_combat(node, nick, other_char.name, defender_nick=other_nick)
         except Exception:
-            logger.exception("Defender mob encounter hook failed for %s", nick)
+            logger.exception("Encounter hook failed for %s", nick)
 
         await handle_grid_view(node, nick, private_target)
     else:
@@ -56,20 +99,22 @@ async def handle_grid_view(node, nickname: str, reply_target: str):
         await node.send(f"PRIVMSG {reply_target} :{tag_msg(f'{nickname} - not a registered player - msg ignored', action='MCP', result='ERR')}")
         return
 
+    loc_name = loc.get('name', 'Unknown')
+    loc_type = loc.get('type', 'void')
     if machine_mode:
-        exits = ",".join(loc['exits']) if loc['exits'] else "none"
-        line = f"NODE:{loc['name']} TYPE:{loc['type']} OWNER:{loc.get('owner','none')} LVL:{loc['level']} EXITS:{exits} POWER:{loc['power_stored']:.1f}/{loc['upgrade_level']*100} DUR:{loc.get('durability',100):.0f}"
+        exits = ",".join(loc.get('exits', [])) if loc.get('exits') else "none"
+        line = f"NODE:{loc_name} TYPE:{loc_type} OWNER:{loc.get('owner','none')} LVL:{loc.get('level', 1)} EXITS:{exits} POWER:{loc.get('power_stored', 0):.1f}/{loc.get('upgrade_level', 1)*100} DUR:{loc.get('durability',100):.0f}"
         await node.send(f"{reply_method} {private_target} :{tag_msg(line, action='GEOINT', result='INFO', is_machine=True)}")
         return
 
-    node_icon = {'safezone': '🛡️', 'arena': '⚔️', 'void': '🌌', 'merchant': '💰'}.get(loc['type'], '📡')
-    header = format_text(f"[ {loc['name']} ]", C_CYAN, bold=True)
+    node_icon = {'safezone': '🛡️', 'arena': '⚔️', 'void': '🌌', 'merchant': '💰'}.get(loc_type, '📡')
+    header = format_text(f"[ {loc_name} ]", C_CYAN, bold=True)
     await node.send(f"{reply_method} {private_target} :{tag_msg(header, action='GEOINT', result='INFO', is_machine=False)}")
     
     desc_msg = format_text(loc.get('description', 'Standard nodal architecture.'), C_YELLOW)
     await node.send(f"{reply_method} {private_target} :{tag_msg(desc_msg, action='GEOINT', is_machine=False)}")
 
-    stats_line = f"Type: {loc['type'].upper()} | Level: {loc['level']} | Credits: {loc.get('credits_pool', 0):.1f}c"
+    stats_line = f"Type: {loc_type.upper()} | Level: {loc.get('level', 1)} | Credits: {loc.get('credits_pool', 0):.1f}c"
     await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(stats_line, C_GREEN), action='OSINT', is_machine=False)}")
     
     # Metadata display
@@ -79,15 +124,19 @@ async def handle_grid_view(node, nickname: str, reply_target: str):
     await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(meta_str, C_CYAN), action='GEOINT', is_machine=False)}")
     
     # Local Topology Mini-Map (Radius 1)
-    async with node.db.async_session() as session:
-        char = await node.db.get_character_by_nick(nickname, node.net_name, session)
-        if char:
-            map_text = await generate_ascii_map(session, char, machine_mode=machine_mode, limit_radius=1, show_legend=False)
-            for line in map_text.split("\n"):
-                await node.send(f"{reply_method} {private_target} :{tag_msg(line, action='GEOINT', is_machine=False)}")
+    if hasattr(node.db, 'async_session'):
+        try:
+            async with node.db.async_session() as session:
+                char = await node.db.get_character_by_nick(nickname, node.net_name, session) if hasattr(node.db, 'get_character_by_nick') else None
+                if char:
+                    map_text = await generate_ascii_map(session, char, machine_mode=machine_mode, limit_radius=1, show_legend=False)
+                    for line in map_text.split("\n"):
+                        await node.send(f"{reply_method} {private_target} :{tag_msg(line, action='GEOINT', is_machine=False)}")
+        except Exception:
+            logger.debug("Failed to render mini-map in grid view")
 
-    action_prompt = f"{nickname} @ {loc['name']} | Use '{node.prefix} move <dir>' to travel."
-    if loc['type'] == 'arena': action_prompt += f" | Use '{node.prefix} queue' to enter the Arena."
+    action_prompt = f"{nickname} @ {loc_name} | Use '{node.prefix} move <dir>' to travel."
+    if loc_type == 'arena': action_prompt += f" | Use '{node.prefix} queue' to enter the Arena."
     await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(action_prompt, C_YELLOW), action='INFO', is_machine=False)}")
 
 async def handle_node_explore(node, nick: str, reply_target: str):
@@ -290,6 +339,26 @@ async def handle_grid_command(node, nickname: str, reply_target: str, action: st
         res = await node.db.link_network(nickname, node.net_name, args[0], node_name=node_name)
         success, msg = res['success'], res['msg']
     elif action == "hack":
+        # Check if claimed territory with owner present
+        try:
+            check_fn = getattr(node.db, 'check_territory_defense', None)
+            if check_fn and callable(check_fn):
+                res = check_fn(nickname, node.net_name)
+                if inspect.isawaitable(res):
+                    res = await res
+                if isinstance(res, (tuple, list)) and len(res) == 3:
+                    forced, owner_name, node_title = res
+                    if forced and owner_name:
+                        from .combat import start_pvp_combat
+                        forced_msg = f"FORCED_COMBAT: You breached {node_title} and triggered defensive counter-measures from owner {owner_name} [TERRITORY_DEFENSE]!"
+                        await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(forced_msg, C_RED, bold=True, is_machine=machine_mode), action='COMBAT', result='FORCED', nick=nickname, is_machine=machine_mode)}")
+                        if not machine_mode:
+                            await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(forced_msg, C_RED), action='COMBAT')}")
+                        await start_pvp_combat(node, nickname, owner_name, action="hack")
+                        return
+        except Exception:
+            logger.debug("Territory defense check skipped or failed for %s", nickname)
+
         res = await node.db.hack_node(nickname, node.net_name)
         success, msg, alert_data = res[0], res[1], res[2] if len(res) > 2 else None
     elif action == "rename":
@@ -435,6 +504,26 @@ async def handle_grid_loot(node, nick: str, reply_target: str, args: list = None
         return
 
     if sub_action == "hack":
+        # Check if claimed territory with owner present
+        try:
+            check_fn = getattr(node.db, 'check_territory_defense', None)
+            if check_fn and callable(check_fn):
+                res = check_fn(nick, node.net_name)
+                if inspect.isawaitable(res):
+                    res = await res
+                if isinstance(res, (tuple, list)) and len(res) == 3:
+                    forced, owner_name, node_title = res
+                    if forced and owner_name:
+                        from .combat import start_pvp_combat
+                        forced_msg = f"FORCED_COMBAT: You breached {node_title} and triggered defensive counter-measures from owner {owner_name} [TERRITORY_DEFENSE]!"
+                        await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(forced_msg, C_RED, bold=True, is_machine=machine_mode), action='COMBAT', result='FORCED', nick=nick, is_machine=machine_mode)}")
+                        if not machine_mode:
+                            await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(forced_msg, C_RED), action='COMBAT')}")
+                        await start_pvp_combat(node, nick, owner_name, action="hack")
+                        return
+        except Exception:
+            logger.debug("Territory defense check skipped or failed for %s", nick)
+
         success, msg, alert = await node.db.infiltration.hack_node(nick, effective_network, target_name=target)
         await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='HACK', result='SUCCESS' if success else 'FAIL', nick=nick, is_machine=machine_mode)}")
         if success:
