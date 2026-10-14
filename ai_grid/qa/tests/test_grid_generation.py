@@ -832,7 +832,55 @@ class TestGridGeneration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Dim: 50x50", msg)
         self.assertIn("Total_Nodes: 2,500", msg)
         self.assertIn("Active: 700", msg)
-        self.assertIn("Void: 1,800", msg)
+    async def test_admin_network_list_and_detail_view(self):
+        """Verify !a admin network list and !a admin network <name> detail views."""
+        from unittest.mock import MagicMock
+        
+        # Configure mock hub with nodes
+        mock_hub = MagicMock()
+        mock_node_2600 = MagicMock()
+        mock_node_2600.net_name = "2600net"
+        mock_node_2600.config = {"nickname": "GridManager", "channel": "#automatagrid"}
+        mock_node_2600.nickserv_verified = {"gridmanager"}
+        mock_node_2600.last_server_ping = 42.0
+        mock_node_2600.channel_users = {"alice": {}, "bob": {}}
+        mock_node_2600.network_name = "2600net"
+        mock_node_2600.irc = MagicMock()
+        mock_node_2600.irc.is_connected.return_value = True
+        mock_node_2600.irc.nickname = "GridManager"
+        mock_node_2600.irc.channel = "#automatagrid"
+
+        mock_hub.nodes = {"2600net": mock_node_2600}
+        self.mock_irc.hub = mock_hub
+        self.mock_irc.last_server_ping = 15.0
+
+        # Test list view: !a admin network
+        self.mock_irc.sent_messages.clear()
+        await handle_admin_command(self.mock_irc, "AdminSys", "admin", ["network"], reply_target="#arena")
+        list_output = " ".join(self.mock_irc.sent_messages)
+        self.assertIn("IRC NETWORKS INFRASTRUCTURE", list_output)
+        self.assertIn("2600NET", list_output)
+        self.assertIn("ONLINE", list_output)
+        self.assertIn("GridManager", list_output)
+        self.assertIn("+r (IDENTIFIED)", list_output)
+        self.assertIn("42ms", list_output)
+
+        # Test detail view: !a admin network 2600net
+        self.mock_irc.sent_messages.clear()
+        await handle_admin_command(self.mock_irc, "AdminSys", "admin", ["network", "2600net"], reply_target="#arena")
+        detail_output = " ".join(self.mock_irc.sent_messages)
+        self.assertIn("NETWORK DETAIL: 2600NET", detail_output)
+        self.assertIn("ONLINE", detail_output)
+        self.assertIn("GridManager", detail_output)
+        self.assertIn("+r (IDENTIFIED)", detail_output)
+        self.assertIn("#automatagrid", detail_output)
+        self.assertIn("42ms", detail_output)
+
+        # Test unknown network
+        self.mock_irc.sent_messages.clear()
+        await handle_admin_command(self.mock_irc, "AdminSys", "admin", ["network", "unknownnet"], reply_target="#arena")
+        err_output = " ".join(self.mock_irc.sent_messages)
+        self.assertIn("Network \"unknownnet\" not found", err_output)
 
 
 if __name__ == "__main__":

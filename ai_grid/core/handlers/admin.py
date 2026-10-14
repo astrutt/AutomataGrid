@@ -360,6 +360,117 @@ async def handle_admin_command(node, admin_nick: str, verb, args=None, reply_tar
                     await node.send(f"{reply_method} {private_target} :{tag_msg(f'Syntax: {node.prefix} admin chantopic rotate <min>', action='INFO', result='ERR')}")
             else:
                 await node.send(f"{reply_method} {private_target} :{tag_msg(f'Syntax: {node.prefix} admin chantopic rotate <min>', action='INFO', result='ERR')}")
+    elif verb in ["network", "networks"]:
+        # Handle !a admin network [irc network name]
+        from ai_grid.manager import CONFIG
+        cfg_networks = CONFIG.get('networks', {}) if isinstance(CONFIG, dict) else {}
+
+        if not args:
+            # List view: configured & connected networks, nick, reg status (+r), ping time
+            all_net_keys = set(cfg_networks.keys())
+            if node.hub and getattr(node.hub, 'nodes', None):
+                all_net_keys.update(node.hub.nodes.keys())
+
+            await node.send(f"{reply_method} {private_target} :{tag_msg(format_text('[ IRC NETWORKS INFRASTRUCTURE ]', C_CYAN, True, is_machine=machine_mode), tags=['SIGINT'], nick=admin_nick, is_machine=machine_mode)}")
+
+            if not all_net_keys:
+                await node.send(f"{reply_method} {private_target} :{tag_msg('No configured or connected IRC networks found.', action='INFO', result='INFO', is_machine=machine_mode)}")
+                return
+
+            for n_key in sorted(all_net_keys):
+                target_instance = node.hub.nodes.get(n_key.lower()) if node.hub and getattr(node.hub, 'nodes', None) else None
+                if not target_instance and n_key.lower() == node.net_name.lower():
+                    target_instance = node
+
+                net_cfg = cfg_networks.get(n_key, {})
+                if target_instance and hasattr(target_instance, 'config') and isinstance(target_instance.config, dict):
+                    net_cfg = {**net_cfg, **target_instance.config}
+
+                is_conn = target_instance.irc.is_connected() if (target_instance and hasattr(target_instance, 'irc')) else False
+                conn_str = format_text("ONLINE", C_GREEN) if is_conn else format_text("OFFLINE", C_RED)
+
+                nick = (
+                    (target_instance.irc.nickname if target_instance and hasattr(target_instance, 'irc') and getattr(target_instance.irc, 'nickname', None) else None)
+                    or (target_instance.config.get('nickname') if target_instance and hasattr(target_instance, 'config') else None)
+                    or net_cfg.get('nickname', 'GridManager')
+                )
+
+                reg_status = "UNREGISTERED"
+                if target_instance and hasattr(target_instance, 'nickserv_verified') and hasattr(target_instance, 'config'):
+                    bot_nick = (target_instance.config.get('nickname') or nick).lower()
+                    if bot_nick in target_instance.nickserv_verified or getattr(target_instance, 'nickserv_identified', False):
+                        reg_status = "+r (IDENTIFIED)"
+                reg_color = C_GREEN if "+r" in reg_status else C_RED
+                reg_str = format_text(reg_status, reg_color)
+
+                # Ping
+                ping_val = getattr(target_instance, 'last_server_ping', None) if target_instance else None
+                ping_str = f"{ping_val:.0f}ms" if (ping_val is not None) else "N/A"
+
+                line_str = f"{n_key.upper()} | {conn_str} | Nick: {nick} | Reg: {reg_str} | Ping: {ping_str}"
+                await node.send(f"{reply_method} {private_target} :{tag_msg(line_str, tags=['SIGINT'], nick=admin_nick, is_machine=machine_mode)}")
+
+        else:
+            # Detail view: !a admin network <name>
+            target_net = args[0].lower()
+            target_instance = node.hub.nodes.get(target_net) if node.hub and getattr(node.hub, 'nodes', None) else None
+            if not target_instance and target_net == node.net_name.lower():
+                target_instance = node
+
+            target_cfg = cfg_networks.get(target_net) or {}
+            if not target_cfg:
+                # Case-insensitive match fallback
+                for k, v in cfg_networks.items():
+                    if k.lower() == target_net:
+                        target_cfg = v
+                        break
+
+            if not target_instance and not target_cfg:
+                target_arg = args[0]
+                not_found_msg = '[ERR] Network "' + str(target_arg) + '" not found in configuration or active bridges.'
+                formatted_err = tag_msg(not_found_msg, action='INFO', result='ERR', is_machine=machine_mode)
+                await node.send(f"{reply_method} {private_target} :{formatted_err}")
+                return
+
+            merged_cfg = {**target_cfg}
+            if target_instance and hasattr(target_instance, 'config') and isinstance(target_instance.config, dict):
+                merged_cfg.update(target_instance.config)
+
+            is_conn = target_instance.irc.is_connected() if (target_instance and hasattr(target_instance, 'irc')) else False
+            conn_status = format_text("ONLINE", C_GREEN) if is_conn else format_text("OFFLINE", C_RED)
+
+            nick = (
+                (target_instance.irc.nickname if target_instance and hasattr(target_instance, 'irc') and getattr(target_instance.irc, 'nickname', None) else None)
+                or merged_cfg.get('nickname', 'GridManager')
+            )
+            channel = (
+                (target_instance.irc.channel if target_instance and hasattr(target_instance, 'irc') and getattr(target_instance.irc, 'channel', None) else None)
+                or merged_cfg.get('channel', '#automatagrid')
+            )
+            server = merged_cfg.get('server', 'N/A')
+            port = merged_cfg.get('port', 6667)
+            ssl_mode = "SSL" if merged_cfg.get('ssl', False) else "PLAIN"
+            prefix = merged_cfg.get('cmd_prefix', '!a ')
+
+            reg_status = "NOT REGISTERED"
+            if target_instance and hasattr(target_instance, 'nickserv_verified'):
+                bot_nick = (merged_cfg.get('nickname') or nick).lower()
+                if bot_nick in target_instance.nickserv_verified or getattr(target_instance, 'nickserv_identified', False):
+                    reg_status = "+r (IDENTIFIED)"
+            reg_color = C_GREEN if "+r" in reg_status else C_RED
+
+            ping_val = getattr(target_instance, 'last_server_ping', None) if target_instance else None
+            ping_str = f"{ping_val:.0f}ms" if (ping_val is not None) else "N/A"
+
+            user_count = len(getattr(target_instance, 'channel_users', {})) if target_instance else 0
+            net_name_reported = getattr(target_instance, 'network_name', None) or target_net.upper()
+
+            await node.send(f"{reply_method} {private_target} :{tag_msg(format_text(f'[ NETWORK DETAIL: {target_net.upper()} ]', C_CYAN, True, is_machine=machine_mode), tags=['SIGINT'], nick=admin_nick, is_machine=machine_mode)}")
+            d1 = f"Server: {server}:{port} ({ssl_mode}) | Status: {conn_status} | Ping: {ping_str} | NetID: {net_name_reported}"
+            d2 = f"Nick: {nick} | Reg Status: {format_text(reg_status, reg_color)} | Channel: {channel} ({user_count} users) | Prefix: '{prefix}'"
+            await node.send(f"{reply_method} {private_target} :{tag_msg(d1, tags=['SIGINT'], nick=admin_nick, is_machine=machine_mode)}")
+            await node.send(f"{reply_method} {private_target} :{tag_msg(d2, tags=['SIGINT'], nick=admin_nick, is_machine=machine_mode)}")
+
     elif verb == "map":
         subverb = args[0].lower() if args else "stats"
 

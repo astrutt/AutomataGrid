@@ -78,6 +78,7 @@ class GridNode:
         self.hype_task = None
         self.registered_bots = 0
         self.pending_pings = {}
+        self.last_server_ping = None
         self.channel_users = {}
         self.action_timestamps = {} # nick.lower() -> {tokens, last_refill, violations, lockout_until}
         self.flood_config = {
@@ -319,7 +320,9 @@ class GridNode:
                 elif command == "PONG":
                     ts_str = msg.strip() if msg else target.strip()
                     if ts_str in self.pending_pings:
-                        self.pending_pings[ts_str]['server_latency'] = (time.time() - self.pending_pings[ts_str]['start']) * 1000
+                        server_lat = (time.time() - self.pending_pings[ts_str]['start']) * 1000
+                        self.pending_pings[ts_str]['server_latency'] = server_lat
+                        self.last_server_ping = server_lat
                         await self._check_ping_complete(ts_str)
                 elif command == "005":
                     # RPL_ISUPPORT - Capture the dynamic IRC network name (Task 061)

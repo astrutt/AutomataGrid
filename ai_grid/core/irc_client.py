@@ -11,13 +11,13 @@ class IRCClient:
         self.net_name = net_name
         if isinstance(config, dict):
             self.config = config
-            self.nickname = config.get('nickname', 'ArenaMaster')
+            self.nickname = config.get('nickname', 'GridManager')
             self.channel = config.get('channel', '#automatagrid')
         else:
             self.config = {
                 'server': str(net_name),
                 'port': config if isinstance(config, int) else 6667,
-                'nickname': 'ArenaMaster',
+                'nickname': 'GridManager',
                 'channel': '#automatagrid',
                 'ssl': False,
             }
@@ -39,7 +39,7 @@ class IRCClient:
         )
         
         await self.send(f"NICK {self.nickname}")
-        await self.send(f"USER {self.nickname} 0 * :AutomataArena Master Node")
+        await self.send(f"USER {self.nickname} 0 * :AutomataGrid Master Node")
         # JOIN is usually handled after receiving the 001 welcome message in the listen loop
         # But we can put it here if we want to be simple, though it might fail if we aren't registered yet.
 
