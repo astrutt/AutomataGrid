@@ -54,6 +54,73 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
+class StatusEffect:
+    def __init__(self, name: str, duration: int, source: str = None, metadata: dict = None):
+        self.name = name.upper()
+        self.duration = duration
+        self.source = source
+        self.metadata = dict(metadata) if metadata is not None else {}
+
+    def __getitem__(self, key):
+        if key == "name":
+            return self.name
+        elif key == "duration":
+            return self.duration
+        elif key == "source":
+            return self.source
+        elif key == "metadata":
+            return self.metadata
+        elif key in self.metadata:
+            return self.metadata[key]
+        raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        if key == "name":
+            self.name = value.upper() if isinstance(value, str) else value
+        elif key == "duration":
+            self.duration = value
+        elif key == "source":
+            self.source = value
+        elif key == "metadata":
+            self.metadata = value
+        else:
+            self.metadata[key] = value
+
+    def __contains__(self, key):
+        return key in ["name", "duration", "source", "metadata"] or key in self.metadata
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):
+        return ["name", "duration", "source", "metadata"] + [k for k in self.metadata if k not in ["name", "duration", "source", "metadata"]]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def items(self):
+        for k in self.keys():
+            yield k, self[k]
+
+    def values(self):
+        for k in self.keys():
+            yield self[k]
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "duration": self.duration,
+            "source": self.source,
+            "metadata": dict(self.metadata)
+        }
+
+    def __repr__(self):
+        return f"<StatusEffect {self.name} dur={self.duration} src={self.source} meta={self.metadata}>"
+
+
 class Entity:
     def __init__(self, name, db_record=None, is_npc=False, **kwargs):
         self.name = name
@@ -68,6 +135,11 @@ class Entity:
         self.bnd = kwargs.get('bnd', db_record.get('bnd', 1))
         self.sec = kwargs.get('sec', db_record.get('sec', 1))
         self.alg = kwargs.get('alg', db_record.get('alg', 1))
+        self.base_cpu = self.cpu
+        self.base_ram = self.ram
+        self.base_bnd = self.bnd
+        self.base_sec = self.sec
+        self.base_alg = self.alg
         self.bio = kwargs.get('bio', db_record.get('bio', 'A rogue process.' if is_npc else 'A mindless drone.'))
         
         try:
@@ -92,6 +164,7 @@ class Entity:
         self.skills = raw_skills if isinstance(raw_skills, dict) else {}
         self.command_queued = None
         self.last_attacker_name = None
+        self.status_effects = {}
         logger.debug(f"Entity '{self.name}' initialized. HP: {self.hp}/{self.max_hp}, UP: {self.up}, NPC: {self.is_npc}")
 
     @property
@@ -102,6 +175,115 @@ class Entity:
     def alive(self):
         return self.is_alive
 
+    @property
+    def effective_bnd(self):
+        return self.bnd
+
+    @property
+    def effective_cpu(self):
+        return self.cpu
+
+    @property
+    def effective_ram(self):
+        return self.ram
+
+    @property
+    def effective_sec(self):
+        return self.sec
+
+    @property
+    def effective_alg(self):
+        return self.alg
+
+    def apply_status(self, name: str, duration: int = None, source: str = None, metadata: dict = None) -> StatusEffect:
+        name_upper = name.upper()
+        meta = dict(metadata) if metadata else {}
+
+        # If effect already active, restore any existing stat drain first to avoid double drain
+        if name_upper in self.status_effects:
+            self._restore_status_stats(self.status_effects[name_upper])
+
+        if name_upper == "THROTTLED":
+            duration = 1 if duration is None else duration
+            if "drained_bnd" not in meta:
+                # -50% or -5 BND
+                raw_drain = max(1, self.bnd // 2) if self.bnd > 1 else 0
+            else:
+                raw_drain = meta["drained_bnd"]
+            actual_drained = max(0, min(raw_drain, self.bnd))
+            meta["drained_bnd"] = actual_drained
+            meta.setdefault("drained_amount", actual_drained)
+            meta.setdefault("stat", "bnd")
+            meta.setdefault("original_bnd", self.bnd)
+            meta.setdefault("original_value", self.bnd)
+            self.bnd -= actual_drained
+
+        elif name_upper == "CORRUPTED":
+            duration = random.randint(2, 3) if duration is None else duration
+            stat = meta.get("stat")
+            if isinstance(stat, str):
+                stat = stat.lower()
+            if stat not in ["cpu", "ram", "bnd", "sec"]:
+                stat = random.choice(["cpu", "ram", "bnd", "sec"])
+            meta["stat"] = stat
+            meta.setdefault("tick_damage", 3)
+            curr_val = getattr(self, stat, 1)
+            meta.setdefault("original_value", curr_val)
+            if "drained_amount" not in meta:
+                raw_drain = random.randint(2, 5)
+            else:
+                raw_drain = meta["drained_amount"]
+            actual_drained = max(0, min(raw_drain, curr_val - 1)) if curr_val > 1 else 0
+            meta["drained_amount"] = actual_drained
+            setattr(self, stat, curr_val - actual_drained)
+
+        elif name_upper == "ROOTED":
+            duration = 1 if duration is None else duration
+
+        elif name_upper == "ENCRYPTED":
+            duration = 2 if duration is None else duration
+
+        else:
+            duration = 1 if duration is None else duration
+
+        effect = StatusEffect(name_upper, duration, source, meta)
+        self.status_effects[name_upper] = effect
+        return effect
+
+    def _restore_status_stats(self, effect: StatusEffect):
+        if effect.metadata.get("restored"):
+            return
+        if effect.name == "THROTTLED":
+            drained = effect.metadata.get("drained_bnd", 0) or effect.metadata.get("drained_amount", 0)
+            if drained:
+                self.bnd += drained
+        elif effect.name == "CORRUPTED":
+            stat = effect.metadata.get("stat")
+            if isinstance(stat, str):
+                stat = stat.lower()
+            drained = effect.metadata.get("drained_amount", 0)
+            if stat and drained:
+                setattr(self, stat, getattr(self, stat) + drained)
+        effect.metadata["restored"] = True
+
+    def remove_status(self, name: str):
+        name_upper = name.upper()
+        effect = self.status_effects.pop(name_upper, None)
+        if effect:
+            self._restore_status_stats(effect)
+        return effect
+
+    def has_status(self, name: str) -> bool:
+        return name.upper() in self.status_effects
+
+    def get_status(self, name: str):
+        return self.status_effects.get(name.upper())
+
+    def clear_statuses(self):
+        for eff in list(self.status_effects.values()):
+            self._restore_status_stats(eff)
+        self.status_effects.clear()
+
 class CombatEngine:
     def __init__(self, match_id, network_prefix, send_callback, llm=None):
         self.match_id = match_id
@@ -109,19 +291,23 @@ class CombatEngine:
         self.send_callback = send_callback 
         self.llm = llm
         self.turn_events = []
+        self.last_turn_events = []
         self.entities = {}
         self.turn = 1
         self.active = False
+        self.sleep_interval = 0.5
+        self._current_acting_turn = None
+        self._acted_this_round = set()
         
         # v1.8.0: Expanded verb map
         self.verb_map = {
             "kinetic": ["attack", "strike", "hit", "punch", "smash", "bash"],
             "cyber": ["hack", "corrupt", "inject", "scramble", "scan"],
             "exploit": ["exploit", "zeroday", "0day"],
-            "flee": ["flee", "retreat", "escape", "run"],
+            "flee": ["flee", "retreat", "escape", "run", "move"],
             "surrender": ["surrender", "yield", "quit"],
             "evade": ["evade", "dodge", "duck"],
-            "defend": ["defend", "block", "brace", "prepare"],
+            "defend": ["defend", "block", "brace", "prepare", "encrypt"],
             "support": ["use", "consume", "repair", "heal", "patch"],
             "social": ["speak", "yell", "taunt", "broadcast"]
         }
@@ -151,12 +337,20 @@ class CombatEngine:
 
     async def broadcast_state(self) -> str:
         logger.debug(f"Match {self.match_id} broadcasting state for Turn {self.turn}")
-        raw_state = f"TURN {self.turn} | LOC: {list(self.entities.values())[0].zone} | "
+        first_ent = list(self.entities.values())[0] if self.entities else None
+        loc_name = first_ent.zone if first_ent else "unknown"
+        raw_state = f"TURN {self.turn} | LOC: {loc_name} | "
         for e in self.entities.values():
             if e.is_alive:
                 hp_color = C_GREEN if e.hp > (e.max_hp/2) else C_RED
                 hp_str = format_text(f"{e.hp}/{e.max_hp}", hp_color)
-                raw_state += f"{e.name} [HP:{hp_str}] "
+                up_str = format_text(f"{int(e.up)}uP", C_CYAN)
+                status_tags = ""
+                if getattr(e, 'status_effects', None):
+                    effects_list = [f"{name}:{eff.duration}" for name, eff in sorted(e.status_effects.items())]
+                    if effects_list:
+                        status_tags = f" [{','.join(effects_list)}]"
+                raw_state += f"{e.name} [HP:{hp_str}][PWR:{up_str}]{status_tags} "
         return raw_state
 
     def queue_command(self, entity_name: str, raw_command: str):
@@ -202,30 +396,79 @@ class CombatEngine:
         
         turn_order.sort(key=lambda x: x[0], reverse=True) 
 
+        acted_this_round = set()
+        self._current_acting_turn = self.turn
+        self._acted_this_round = acted_this_round
+
         narrative_log = []
         for roll, actor in turn_order:
             if not actor.is_alive or actor.status == "Stunned": continue
+
+            # Apply CORRUPTED pulse tick if active on actor
+            if actor.has_status("CORRUPTED") and actor.is_alive:
+                corr_status = actor.get_status("CORRUPTED")
+                tick_dmg = corr_status.metadata.get("tick_damage", 3)
+                actor.hp -= tick_dmg
+                narrative_log.append(f"{format_text(actor.name, C_RED)} suffers a corruption pulse for {format_text(str(tick_dmg) + ' DMG', C_RED)}!")
+                self.turn_events.append({
+                    "type": "corruption_tick",
+                    "actor": actor.name,
+                    "target": actor.name,
+                    "damage": tick_dmg,
+                    "status": "CORRUPTED",
+                    "hp": actor.hp
+                })
+                if actor.hp <= 0:
+                    actor.clear_statuses()
+                    narrative_log.append(f"{format_text(actor.name + ' HAS BEEN DISCONNECTED!', C_RED, bold=True)}")
+                    self.turn_events.append({"type": "fatal", "actor": actor.name, "reason": "corruption"})
+                    acted_this_round.add(actor.name)
+                    continue
 
             cmd = actor.command_queued
             if not cmd:
                 logger.warning(f"Timeout: {actor.name} submitted no command.")
                 narrative_log.append(f"{actor.name}'s AI core timed out. (Skipped turn)")
                 self.turn_events.append({"type": "timeout", "actor": actor.name})
+                acted_this_round.add(actor.name)
                 continue
+
+            intent = cmd["intent"]
+
+            # Check THROTTLED status effect
+            if actor.has_status("THROTTLED"):
+                if intent in ["kinetic", "cyber", "exploit"]:
+                    narrative_log.append(f"{format_text(actor.name, C_YELLOW)} is THROTTLED! Action delayed. (Skipped turn)")
+                    self.turn_events.append({
+                        "type": "throttled_delay",
+                        "actor": actor.name,
+                        "status": "THROTTLED",
+                        "verb": cmd['raw_verb']
+                    })
+                    actor.command_queued = None
+                    acted_this_round.add(actor.name)
+                    continue
 
             if actor.status == "Evading": actor.status = "Normal"
 
-            intent = cmd["intent"]
             target_name = cmd["args"].split()[0] if cmd["args"] else None
 
             # v1.8.0: uP Cost Logic
-            up_costs = {"kinetic": 10, "cyber": 15, "exploit": 50, "flee": 20, "evade": 5, "defend": 5, "support": 5}
+            is_defend_encrypt = False
+            if intent == "defend":
+                raw_v = cmd.get("raw_verb", "").lower()
+                arg_v = cmd.get("args", "").lower()
+                if raw_v == "encrypt" or "encrypt" in arg_v.split():
+                    is_defend_encrypt = True
+
+            up_costs = {"kinetic": 10, "cyber": 15, "exploit": 50, "flee": 20, "evade": 5, "defend": 10 if is_defend_encrypt else 5, "support": 5}
             cost = up_costs.get(intent, 0)
             
             if actor.up < cost:
                 narrative_log.append(f"{actor.name} has insufficient power for {cmd['raw_verb']}! (Action Failed)")
                 self.turn_events.append({"type": "insufficient_power", "actor": actor.name, "verb": cmd['raw_verb']})
                 actor.command_queued = None
+                acted_this_round.add(actor.name)
                 continue
                 
             actor.up -= cost
@@ -246,24 +489,37 @@ class CombatEngine:
             
             elif intent == "evade":
                 actor.status = "Evading"
-                narrative_log.append(f"{format_text(actor.name, C_CYAN)} enters evasion mode. (uP耗: 5)")
+                narrative_log.append(f"{format_text(actor.name, C_CYAN)} enters evasion mode. (uP cost: 5)")
                 self.turn_events.append({"type": "defend_stance", "actor": actor.name, "mode": "evade"})
             elif intent == "defend":
-                actor.status = "Defending"
-                narrative_log.append(f"{format_text(actor.name, C_CYAN)} buffers incoming damage. (uP耗: 5)")
-                self.turn_events.append({"type": "defend", "actor": actor.name})
-            elif intent == "flee":
-                # v1.8.0: Flee attempt
-                if random.random() > 0.4: # 60% success
-                    actor.hp = 0 # Mark as out of match
-                    narrative_log.append(f"{format_text(actor.name, C_YELLOW)} successfully extracted from the combat zone!")
-                    self.turn_events.append({"type": "flee", "actor": actor.name, "success": True})
+                if is_defend_encrypt:
+                    actor.apply_status("ENCRYPTED", duration=2, source=actor.name)
+                    narrative_log.append(f"{format_text(actor.name, C_CYAN)} activates cryptographic shield! (ENCRYPTED for 2 turns, uP cost: 10)")
+                    self.turn_events.append({"type": "defend_stance", "actor": actor.name, "mode": "encrypt", "status": "ENCRYPTED", "duration": 2})
                 else:
-                    narrative_log.append(f"{actor.name} tried to flee but the escape route is locked!")
-                    self.turn_events.append({"type": "flee", "actor": actor.name, "success": False})
+                    actor.status = "Defending"
+                    narrative_log.append(f"{format_text(actor.name, C_CYAN)} buffers incoming damage. (uP cost: 5)")
+                    self.turn_events.append({"type": "defend", "actor": actor.name})
+            elif intent == "flee":
+                # Check ROOTED status
+                if actor.has_status("ROOTED"):
+                    verb_attempted = cmd.get("raw_verb", "flee")
+                    narrative_log.append(f"{format_text(actor.name, C_YELLOW)} attempts to {verb_attempted}, but is {format_text('ROOTED', C_RED)} to the node! (Action Failed)")
+                    self.turn_events.append({"type": "flee", "actor": actor.name, "success": False, "reason": "rooted", "status": "ROOTED", "verb": verb_attempted})
+                else:
+                    # v1.8.0: Flee attempt
+                    if random.random() > 0.4: # 60% success
+                        actor.hp = 0 # Mark as out of match
+                        actor.clear_statuses()
+                        narrative_log.append(f"{format_text(actor.name, C_YELLOW)} successfully extracted from the combat zone!")
+                        self.turn_events.append({"type": "flee", "actor": actor.name, "success": True})
+                    else:
+                        narrative_log.append(f"{actor.name} tried to flee but the escape route is locked!")
+                        self.turn_events.append({"type": "flee", "actor": actor.name, "success": False})
             elif intent == "surrender":
                 actor.hp = 0
                 actor.status = "Surrendered"
+                actor.clear_statuses()
                 narrative_log.append(f"{format_text(actor.name, C_RED)} has YIELDED. Combat terminated for unit.")
                 self.turn_events.append({"type": "surrender", "actor": actor.name})
                 
@@ -291,6 +547,35 @@ class CombatEngine:
                 narrative_log.append(f"{actor.name} attempted invalid opcode '{cmd['raw_verb']}'.")
 
             actor.command_queued = None
+            acted_this_round.add(actor.name)
+
+        self._current_acting_turn = None
+
+        # Decrement status durations, restore drained stats upon expiration
+        for ent in self.entities.values():
+            if not ent.is_alive:
+                continue
+            expired = []
+            for eff_name, eff in list(ent.status_effects.items()):
+                if eff.metadata.get("skip_first_decay"):
+                    eff.metadata.pop("skip_first_decay", None)
+                    continue
+                eff.duration -= 1
+                if eff.duration <= 0:
+                    expired.append(eff)
+            for eff in expired:
+                restored_stat = eff.metadata.get("stat")
+                restored_amt = eff.metadata.get("drained_amount") or eff.metadata.get("drained_bnd")
+                ent.remove_status(eff.name)
+                narrative_log.append(f"Status effect {format_text(eff.name, C_CYAN)} on {ent.name} has expired.")
+                self.turn_events.append({
+                    "type": "status_expire",
+                    "actor": ent.name,
+                    "target": ent.name,
+                    "status": eff.name,
+                    "restored_stat": restored_stat,
+                    "restored_amount": restored_amt
+                })
 
         report_lines = []
         if self.llm and hasattr(self.llm, 'generate_turn_battle_report'):
@@ -308,8 +593,10 @@ class CombatEngine:
         await self.send_callback(tag_msg(f"TURN {self.turn} RESULTS:", tags=['ARENA', 'COMBAT']))
         for line in lines_to_send:
             await self.send_callback(f"⚔️ {line}")
-            await asyncio.sleep(0.5) 
+            if getattr(self, 'sleep_interval', 0.5) > 0:
+                await asyncio.sleep(self.sleep_interval)
 
+        self.last_turn_events = list(self.turn_events)
         self.turn_events = []
         self.turn += 1
         is_active = self._check_match_status()
@@ -317,7 +604,7 @@ class CombatEngine:
             logger.info(f"Match {self.match_id} triggered completion condition.")
         return is_active
 
-    def _execute_attack(self, attacker, target_name: str, mode: str = "kinetic"):
+    def _execute_attack(self, attacker, target_name: str, mode: str = "kinetic", cyber_effect: str = None):
         if isinstance(attacker, str):
             attacker = self.entities.get(attacker)
         if not attacker:
@@ -349,11 +636,9 @@ class CombatEngine:
         target.last_attacker_name = attacker.name
 
         # --- v1.8.0 EVASION / DEFENSE LOGIC ---
-        # Mech Balance: Evasion decoupling - uses ALG instead of BND
-        # Remediation: Reduced multiplier to 1.0 and cap to 60% to normalize STK
         evade_chance = target.alg * 1.0
         if target.status == "Evading": evade_chance += 30
-        evade_chance = min(60.0, evade_chance) # Cap at 60%
+        evade_chance = min(60.0, evade_chance)
         
         if random.randint(1, 100) <= evade_chance: 
             self.turn_events.append({"type": "evade", "actor": attacker.name, "target": target.name, "mode": mode})
@@ -400,9 +685,59 @@ class CombatEngine:
         else:
             dmg_str = format_text(f"{final_dmg} DMG", C_RED)
 
+        # Check ENCRYPTED status on target
+        if target.has_status("ENCRYPTED"):
+            if mode == "cyber":
+                final_dmg = 0
+                dmg_str = format_text("0 DMG (ENCRYPTED)", C_CYAN)
+            elif mode == "kinetic":
+                final_dmg = int(final_dmg * 1.15)
+                if is_crit:
+                    dmg_str = format_text(f"{final_dmg} CRITICAL DMG (+15% VULNERABLE)", C_RED, bold=True)
+                else:
+                    dmg_str = format_text(f"{final_dmg} DMG (+15% VULNERABLE)", C_RED)
+
         target.hp -= final_dmg
         is_fatal = target.hp <= 0
-        self.turn_events.append({
+        if is_fatal:
+            target.clear_statuses()
+
+        # Status effect application
+        status_proc = None
+        if target.is_alive:
+            target_already_acted = getattr(self, '_current_acting_turn', None) == self.turn and target.name in getattr(self, '_acted_this_round', set())
+
+            if mode == "kinetic" and is_crit:
+                eff = target.apply_status("ROOTED", duration=1, source=attacker.name)
+                if target_already_acted:
+                    eff.metadata["skip_first_decay"] = True
+                status_proc = "ROOTED"
+            elif mode == "cyber" and not target.has_status("ENCRYPTED"):
+                raw_verb = attacker.command_queued.get("raw_verb", "") if attacker.command_queued else ""
+                has_cyber_advantage = attacker.bnd > target.bnd
+                eff_name = None
+                if cyber_effect:
+                    eff_name = cyber_effect.upper()
+                elif is_crit:
+                    if has_cyber_advantage or raw_verb in ["corrupt", "inject"] or target.has_status("THROTTLED"):
+                        eff_name = "CORRUPTED"
+                    else:
+                        eff_name = "THROTTLED"
+                elif has_cyber_advantage or raw_verb in ["corrupt", "inject"]:
+                    eff_name = "CORRUPTED"
+
+                if eff_name == "CORRUPTED":
+                    eff = target.apply_status("CORRUPTED", duration=random.randint(2, 3), source=attacker.name)
+                    if target_already_acted:
+                        eff.metadata["skip_first_decay"] = True
+                    status_proc = "CORRUPTED"
+                elif eff_name == "THROTTLED":
+                    eff = target.apply_status("THROTTLED", duration=1, source=attacker.name)
+                    if target_already_acted:
+                        eff.metadata["skip_first_decay"] = True
+                    status_proc = "THROTTLED"
+
+        attack_event = {
             "type": "attack" if mode != "exploit" else "exploit",
             "actor": attacker.name,
             "target": target.name,
@@ -410,11 +745,31 @@ class CombatEngine:
             "damage": final_dmg,
             "critical": is_crit,
             "fatal": is_fatal
-        })
+        }
+        if status_proc:
+            attack_event["status_proc"] = status_proc
+        self.turn_events.append(attack_event)
+
+        if status_proc:
+            self.turn_events.append({
+                "type": "status_proc",
+                "actor": attacker.name,
+                "target": target.name,
+                "status": status_proc,
+                "duration": target.get_status(status_proc).duration,
+                "mode": mode
+            })
+
+        status_str = f" [{format_text(status_proc + ' APPLIED', C_YELLOW, bold=True)}]" if status_proc else ""
         fatal_str = f" {format_text(target.name + ' HAS BEEN DISCONNECTED!', C_RED, bold=True)}" if is_fatal else ""
         
-        return f"{format_text(attacker.name, C_CYAN)} {verb} {target.name} for {dmg_str}!{fatal_str}"
+        return f"{format_text(attacker.name, C_CYAN)} {verb} {target.name} for {dmg_str}!{status_str}{fatal_str}"
 
     def _check_match_status(self):
         alive = sum(1 for e in self.entities.values() if e.is_alive)
-        return alive > 1
+        if alive <= 1:
+            self.active = False
+            for ent in self.entities.values():
+                ent.clear_statuses()
+            return False
+        return True

@@ -95,7 +95,7 @@ Combat turns are initiative-based (`(CPU + RAM + BND + SEC) / 4 + roll(1-10)`) l
 - **Evasion**: Base evasion chance is `ALG * 1.0%`, capped at 60%.
 - **Criticals**: Critical hit chance is `ALG%` dealing 200% damage.
 - **Surrender**: Surrendering invokes a 10-minute PvP ban.
-- **Resolution**: Defeated players lose stored power/data and are ejected to spawn. Engaged players are locked from third-party interference. Temporary stances (`Evading`, `Defending`) are active; timed effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`) remain planned.
+- **Resolution**: Defeated players lose stored power/data and are ejected to spawn. Engaged players are locked from third-party interference. Temporary stances (`Evading`, `Defending`) and timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`) are active.
 
 ---
 
@@ -238,8 +238,8 @@ Incursions are high-priority network threats that manifest semi-randomly across 
 
 ## Current Scope and Gaps
 
-- **Implemented:** Spectator progression; full 50×50 procedural grid generation with 14 diverse region types, realistic clustering, dynamic IRC home node spawning, and expanded admin map controls; reputation and MCP heat system with automated passive decay, cross-type institutional consequences, and threshold-triggered world responses (merchant discounts/lockouts, IDS alert triggers, defender mob spawns); forced combat rules (claimed territory defense, Warzones, PvE mobs) and optional open-world PvP challenges (`engage`, `flee`, timeout); `!a login <name> <key>` session authentication; Arena queue and ready gating; claimed node stability decay exemption; crafting and zero-day chains; eight trainable skills; node stash; NET remote operations; and incursion rewards.
-- **Planned / Future:** Timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`), bounty board system with posting and hunting flows, remote node ownership claiming across NET bridges, and the MCP Grid Messenger bot.
+- **Implemented:** Spectator progression; full 50×50 procedural grid generation with 14 diverse region types, realistic clustering, dynamic IRC home node spawning, and expanded admin map controls; reputation and MCP heat system with automated passive decay, cross-type institutional consequences, and threshold-triggered world responses (merchant discounts/lockouts, IDS alert triggers, defender mob spawns); forced combat rules (claimed territory defense, Warzones, PvE mobs) and optional open-world PvP challenges (`engage`, `flee`, timeout); `!a login <name> <key>` session authentication; Arena queue and ready gating; claimed node stability decay exemption; crafting and zero-day chains; eight trainable skills; node stash; NET remote operations; timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`); and incursion rewards.
+- **Planned / Future:** Bounty board system with posting and hunting flows, remote node ownership claiming across NET bridges, and the MCP Grid Messenger bot.
 
 ---
 *Maintained by Mech — implementation status reviewed October 2026*

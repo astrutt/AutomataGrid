@@ -615,7 +615,7 @@ Listed in order of payoff vs. complexity:
 | 3 | 50×50 grid with diverse region types | Implemented |
 | 4 | Data / vulnerability / zero-day crafting chain | Implemented |
 | 5 | NET device + remote network operations | Implemented; live IRC smoke test deferred |
-| 6 | Timed combat status effects | Planned |
+| 6 | Timed combat status effects | Implemented |
 | 7 | Skill expansion (recon, siphon, stealth, fortify) | Implemented |
 | 8 | Node stash system | Implemented |
 | 9 | Bounty board | Planned |
