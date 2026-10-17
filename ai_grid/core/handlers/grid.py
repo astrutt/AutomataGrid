@@ -441,7 +441,7 @@ async def handle_grid_loot(node, nick: str, reply_target: str, args: list = None
     
     # --- ARGUMENT PARSING ---
     # Expected args: [network] [subaction] [target]
-    sub_actions = ["explore", "probe", "hack", "siphon", "exploit", "breach"]
+    sub_actions = ["explore", "probe", "hack", "siphon", "exploit", "breach", "claim", "upgrade", "repair", "status", "stash"]
     network = None
     sub_action = None
     target = None
@@ -468,7 +468,7 @@ async def handle_grid_loot(node, nick: str, reply_target: str, args: list = None
 
     if network:
         remote_action = sub_action or "raid"
-        if remote_action in ["explore", "probe", "hack", "siphon", "exploit", "raid"]:
+        if remote_action in ["explore", "probe", "hack", "siphon", "exploit", "raid", "claim", "upgrade", "repair", "status", "stash"]:
             from .remote_net import handle_remote_net_command
 
             await handle_remote_net_command(

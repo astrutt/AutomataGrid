@@ -1,5 +1,6 @@
 # ai_grid/core/handlers/remote_net.py
 import asyncio
+import inspect
 import json
 import logging
 from typing import Optional, List, Dict, Any
@@ -67,9 +68,14 @@ async def handle_remote_net_command(
       net <network> explore
       net <network> probe <target>
       net <network> hack <target>
-      net <network> siphon <target> [percent]
+      net <network> siphon <target> [power|data|all] [%]
       net <network> exploit <target>
       net <network> raid <target>
+      net <network> claim <target>
+      net <network> upgrade <target>
+      net <network> repair <target>
+      net <network> status <target>
+      net <network> stash <target>
       net <network> msg <message>
       net <network> msg <channel> <nick> [message]
       net state <OPEN|CLOSED|STEALTH>
@@ -121,8 +127,8 @@ async def handle_remote_net_command(
     sub_args = args[1:]
 
     # Rate limiting for intensive remote ops
-    if sub_action in ["explore", "probe", "hack", "siphon", "exploit", "raid"]:
-        cooldown = 15 if sub_action == "explore" else (30 if sub_action in ["probe", "hack"] else 60)
+    if sub_action in ["explore", "probe", "hack", "siphon", "exploit", "raid", "claim", "upgrade", "repair", "status", "stash"]:
+        cooldown = 15 if sub_action in ["explore", "status", "stash"] else (30 if sub_action in ["probe", "hack", "claim", "upgrade", "repair"] else 60)
         if not await check_rate_limit(node, nick, reply_target, cooldown=cooldown, consume=False, verb=f"net_{sub_action}"):
             return
 
@@ -232,22 +238,90 @@ async def handle_remote_net_command(
                 await res
         return
 
-    if sub_action == "siphon":
-        percent = 100.0
-        if len(sub_args) > 1:
-            try:
-                percent = float(sub_args[1])
-            except ValueError:
-                pass
-        ok, msg, alert_data = await node.db.remote_net.remote_siphon(nick, node.net_name, target_network, target_name, percent=percent)
+    if sub_action == "claim":
+        result = await node.db.remote_claim_node(nick, node.net_name, target_network, target_name)
+        ok = result.get("success", False)
+        msg = result.get("msg", "Claim sequence resolved.")
+        alert_data = result.get("alert_data")
         if alert_data:
             asyncio.create_task(handle_remote_alert_routing(node, alert_data))
-        await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='NET_SIPHON', result='SUCCESS' if ok else 'FAIL', nick=nick, is_machine=machine_mode)}")
+        fmt_msg = format_text(msg, C_GREEN if ok else C_RED, is_machine=machine_mode)
+        await node.send(f"{reply_method} {private_target} :{tag_msg(fmt_msg, action='NET_CLAIM', result='SUCCESS' if ok else 'FAIL', nick=nick, is_machine=machine_mode)}")
         if ok and hasattr(node, "add_xp"):
-            res = node.add_xp(nick, 20, reply_target)
+            res = node.add_xp(nick, 50, reply_target)
             if asyncio.iscoroutine(res):
                 await res
         return
+
+    if sub_action in ["upgrade", "repair", "status", "stash"]:
+        result = await node.db.remote_manage_node(nick, node.net_name, target_network, target_name, sub_action, sub_args[1:])
+        ok = result.get("success", False)
+        msg = result.get("msg", "Remote administration sequence resolved.")
+        alert_data = result.get("alert_data")
+        if alert_data:
+            asyncio.create_task(handle_remote_alert_routing(node, alert_data))
+        color = C_CYAN if (ok and sub_action in ["status", "stash"]) else (C_GREEN if ok else C_RED)
+        fmt_msg = format_text(msg, color, is_machine=machine_mode)
+        action_tag = f"NET_{sub_action.upper()}"
+        await node.send(f"{reply_method} {private_target} :{tag_msg(fmt_msg, action=action_tag, result='SUCCESS' if ok else 'FAIL', nick=nick, is_machine=machine_mode)}")
+        if ok and hasattr(node, "add_xp"):
+            xp_reward = 25 if sub_action == "upgrade" else (20 if sub_action == "repair" else 5)
+            res = node.add_xp(nick, xp_reward, reply_target)
+            if asyncio.iscoroutine(res):
+                await res
+        return
+
+    if sub_action == "siphon":
+        # Check if caller owns target node on target_network across bridge
+        is_owned = False
+        try:
+            owner_fn = getattr(node.db, "is_node_owner", None)
+            if owner_fn is None and hasattr(node.db, "remote_net"):
+                owner_fn = getattr(node.db.remote_net, "is_node_owner", None)
+            if owner_fn is None and hasattr(node.db, "grid"):
+                owner_fn = getattr(node.db.grid, "is_node_owner", None)
+
+            if owner_fn and callable(owner_fn):
+                res = owner_fn(nick, node.net_name, target_network, target_name)
+                if inspect.isawaitable(res):
+                    is_owned = await res
+                elif isinstance(res, bool):
+                    is_owned = res
+        except Exception as e:
+            logger.debug(f"Remote siphon ownership verification failed: {e}")
+            is_owned = False
+
+        if is_owned:
+            result = await node.db.remote_manage_node(nick, node.net_name, target_network, target_name, "siphon", sub_args[1:])
+            ok = result.get("success", False)
+            msg = result.get("msg", "Remote siphon resolved.")
+            alert_data = result.get("alert_data")
+            if alert_data:
+                asyncio.create_task(handle_remote_alert_routing(node, alert_data))
+            fmt_msg = format_text(msg, C_GREEN if ok else C_RED, is_machine=machine_mode)
+            await node.send(f"{reply_method} {private_target} :{tag_msg(fmt_msg, action='NET_SIPHON', result='SUCCESS' if ok else 'FAIL', nick=nick, is_machine=machine_mode)}")
+            if ok and hasattr(node, "add_xp"):
+                res = node.add_xp(nick, 20, reply_target)
+                if asyncio.iscoroutine(res):
+                    await res
+            return
+        else:
+            percent = 100.0
+            if len(sub_args) > 1:
+                try:
+                    percent = float(sub_args[1].rstrip("%"))
+                except ValueError:
+                    pass
+            ok, msg, alert_data = await node.db.remote_net.remote_siphon(nick, node.net_name, target_network, target_name, percent=percent)
+            if alert_data:
+                asyncio.create_task(handle_remote_alert_routing(node, alert_data))
+            fmt_msg = format_text(msg, C_GREEN if ok else C_RED, is_machine=machine_mode)
+            await node.send(f"{reply_method} {private_target} :{tag_msg(fmt_msg, action='NET_SIPHON', result='SUCCESS' if ok else 'FAIL', nick=nick, is_machine=machine_mode)}")
+            if ok and hasattr(node, "add_xp"):
+                res = node.add_xp(nick, 20, reply_target)
+                if asyncio.iscoroutine(res):
+                    await res
+            return
 
     if sub_action == "exploit":
         item_name = sub_args[1] if len(sub_args) > 1 else None
@@ -276,4 +350,4 @@ async def handle_remote_net_command(
         return
 
     # Unrecognized operation
-    await node.send(f"{reply_method} {private_target} :{tag_msg(f'Unrecognized remote operation: {sub_action}. Supported: explore, probe, hack, siphon, exploit, raid, msg, state', action='NET', result='ERR', nick=nick, is_machine=machine_mode)}")
+    await node.send(f"{reply_method} {private_target} :{tag_msg(f'Unrecognized remote operation: {sub_action}. Supported: explore, probe, hack, siphon, exploit, raid, claim, upgrade, repair, status, stash, msg, state', action='NET', result='ERR', nick=nick, is_machine=machine_mode)}")

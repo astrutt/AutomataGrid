@@ -119,7 +119,7 @@ class CommandRouter:
                     # Aliased via x grid net <network> ...
                     net_subargs = args[1:]
                     if not net_subargs:
-                        await self.node.send(f"PRIVMSG {reply_target} :[ERR] Syntax: {prefix} grid net <network> <explore|probe|hack|siphon|exploit|raid|msg> OR {prefix} grid net <affinity>")
+                        await self.node.send(f"PRIVMSG {reply_target} :[ERR] Syntax: {prefix} grid net <network> <explore|probe|hack|siphon|exploit|raid|claim|upgrade|repair|status|stash|msg> OR {prefix} grid net <affinity>")
                     elif net_subargs[0].lower() in ["state", "mode", "open", "closed", "stealth"]:
                         asyncio.create_task(handlers.handle_remote_net_command(self.node, source_nick, reply_target, net_subargs[0], net_subargs[1:]))
                     elif len(net_subargs) == 1:
@@ -192,7 +192,7 @@ class CommandRouter:
 
             elif verb == "net":
                 if not args:
-                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Syntax: {prefix} net <network> <explore|probe|hack|siphon|exploit|raid|msg> OR {prefix} net state <OPEN|CLOSED|STEALTH>")
+                    await self.node.send(f"PRIVMSG {reply_target} :[ERR] Syntax: {prefix} net <network> <explore|probe|hack|siphon|exploit|raid|claim|upgrade|repair|status|stash|msg> OR {prefix} net state <OPEN|CLOSED|STEALTH>")
                 elif args[0].lower() in ["state", "mode", "open", "closed", "stealth"]:
                     asyncio.create_task(handlers.handle_remote_net_command(self.node, source_nick, reply_target, args[0], args[1:]))
                 elif len(args) == 1:

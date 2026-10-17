@@ -6,7 +6,7 @@ from typing import Optional, Tuple, Dict, Any, List
 
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, update
 
 from ai_grid.models import (
     Character,
@@ -21,7 +21,7 @@ from ai_grid.models import (
     InventoryItem,
     ItemTemplate,
 )
-from ai_grid.database.core import CONFIG
+from ai_grid.database.core import CONFIG, increment_daily_task
 from ai_grid.database.base_repo import BaseRepository
 from ai_grid.core.security_utils import get_security_dc_multiplier, is_action_hostile
 
@@ -33,7 +33,12 @@ def get_net_device_state(node: Optional[GridNode]) -> str:
     """
     if not node:
         return "CLOSED"
-    addons = json.loads(node.addons_json or "{}") if isinstance(node.addons_json, str) else (node.addons_json or {})
+    try:
+        addons = json.loads(node.addons_json or "{}") if isinstance(node.addons_json, str) else (node.addons_json or {})
+        if not isinstance(addons, dict):
+            addons = {}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        addons = {}
     if not addons.get("NET"):
         return (node.availability_mode or "CLOSED").upper()
 
@@ -50,6 +55,21 @@ def get_net_device_state(node: Optional[GridNode]) -> str:
         return str(node.availability_mode).upper()
 
     return "OPEN"
+
+
+def _parse_stash_items(stash_raw: Any) -> List[str]:
+    """Safely extracts a list of item names from stash_inventory whether list, json string, or none."""
+    if not stash_raw:
+        return []
+    if isinstance(stash_raw, str):
+        try:
+            parsed = json.loads(stash_raw)
+            return [str(item) for item in parsed] if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return []
+    if isinstance(stash_raw, (list, tuple)):
+        return [str(item) for item in stash_raw]
+    return []
 
 
 class RemoteNetRepository(BaseRepository):
@@ -93,12 +113,7 @@ class RemoteNetRepository(BaseRepository):
             return False, f"Invalid state '{state}'. Permitted states: OPEN, CLOSED, STEALTH."
 
         async with self.async_session() as session:
-            stmt = select(Character).join(Player).join(NetworkAlias).where(
-                Character.name == name,
-                NetworkAlias.nickname == name,
-                NetworkAlias.network_name == network
-            ).options(selectinload(Character.current_node))
-            char = (await session.execute(stmt)).scalars().first()
+            char = await self.get_character_by_nick(name, network, session)
             if not char:
                 return False, "System offline: Character not found."
 
@@ -182,7 +197,12 @@ class RemoteNetRepository(BaseRepository):
         if node.owner_character_id != char.id and get_net_device_state(node) != "OPEN":
             return False, "Access Denied: Node is claimed by another entity.", None
 
-        addons = json.loads(node.addons_json or "{}") if isinstance(node.addons_json, str) else (node.addons_json or {})
+        try:
+            addons = json.loads(node.addons_json or "{}") if isinstance(node.addons_json, str) else (node.addons_json or {})
+            if not isinstance(addons, dict):
+                addons = {}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            addons = {}
         if not addons.get("NET"):
             return False, "Hardware Error: Active NET device required for remote operations.", None
 
@@ -871,4 +891,431 @@ class RemoteNetRepository(BaseRepository):
                 "yield_modifier": "-20%",
                 "alert_data": alert_data,
                 "msg": f"Remote Raid Successful! Extracted {c_gain}c and {d_gain:.1f} Data from {target_node.name} on {target_network} (-20% remote dampening).",
+            }
+
+    async def is_node_owner(
+        self, nick: str, network: str, target_network: str, target_node: str
+    ) -> bool:
+        """Checks if character owns target node on target_network across bridge."""
+        if not target_node or not target_network or not nick or not network:
+            return False
+        raw_target = str(target_node).strip()
+        clean_target = raw_target.strip("[]").strip()
+        raw_net = str(target_network).strip()
+        async with self.async_session() as session:
+            char = await self.get_character_by_nick(nick, network, session)
+            if not char:
+                return False
+
+            target_stmt = select(GridNode).where(
+                (func.lower(GridNode.name) == raw_target.lower()) | (func.lower(GridNode.name) == clean_target.lower()),
+                GridNode.net_affinity.ilike(raw_net)
+            )
+            node_target = (await session.execute(target_stmt)).scalars().first()
+            return bool(node_target and node_target.owner_character_id == char.id)
+
+    async def remote_claim_node(
+        self, nick: str, network: str, target_network: str, target_node: str
+    ) -> Dict[str, Any]:
+        """
+        net <network> claim <target>:
+        - Verify caller is stationed at a node they own with an active NET device pointed at target_network.
+        - Resolve target node on target_network.
+        - Access Gating:
+          - If remote node is OPEN: instant claim permitted if unowned.
+          - If remote node is CLOSED/STEALTH: requires an active valid breach (TTL <= 300s).
+          - If remote node is already owned by another player: reject with rival ownership notice.
+          - If caller already owns it: reject with already commanded notice.
+        - On successful claim: set owner_character_id = char.id, set initial power (100.0) and durability (100.0),
+          award task/XP progression, and commit.
+        - Contested node check: if previously contested (breached/IDS/firewall hits/damage), generate alert_data for target network.
+        """
+        if not target_node or not str(target_node).strip():
+            return {"success": False, "msg": "Target node coordinate or identifier required."}
+        if not target_network or not str(target_network).strip():
+            return {"success": False, "msg": "Target network required."}
+
+        async with self.async_session() as session:
+            char = await self.get_character_by_nick(nick, network, session)
+            if not char:
+                return {"success": False, "msg": "System offline: Character not found."}
+
+            ok, msg, local_node = self.verify_remote_prerequisites(char, target_network)
+            if not ok:
+                return {"success": False, "msg": msg}
+
+            if local_node.owner_character_id != char.id:
+                return {"success": False, "msg": "Access Denied: Remote operations require operating from an owned node."}
+
+            raw_target = str(target_node).strip()
+            clean_target = raw_target.strip("[]").strip()
+            raw_net = str(target_network).strip()
+            target_stmt = select(GridNode).where(
+                (func.lower(GridNode.name) == raw_target.lower()) | (func.lower(GridNode.name) == clean_target.lower()),
+                GridNode.net_affinity.ilike(raw_net)
+            )
+            node_target = (await session.execute(target_stmt)).scalars().first()
+            if not node_target:
+                return {"success": False, "msg": f"Target '{target_node}' not detected on {target_network}."}
+
+            if node_target.id == local_node.id:
+                return {"success": False, "msg": "Target Conflict: Cannot target the local operating node via remote NET device."}
+
+            # Ownership conflicts
+            if node_target.owner_character_id == char.id:
+                return {"success": False, "msg": "You already command this node."}
+
+            if node_target.owner_character_id is not None:
+                return {"success": False, "msg": "This node is controlled by a rival. You must seize it."}
+
+            # Access Gating
+            tn_state = get_net_device_state(node_target)
+            expiry_limit = datetime.now(timezone.utc) - timedelta(seconds=300)
+            breach_stmt = select(BreachRecord).where(
+                BreachRecord.character_id == char.id,
+                BreachRecord.node_id == node_target.id,
+                BreachRecord.raid_target_id == None,
+                BreachRecord.breached_at > expiry_limit
+            ).order_by(BreachRecord.breached_at.desc())
+            breach = (await session.execute(breach_stmt)).scalars().first()
+
+            if (tn_state in ["CLOSED", "STEALTH"] or node_target.availability_mode == "CLOSED") and not breach:
+                return {
+                    "success": False,
+                    "msg": f"Access Denied: Remote node {node_target.name} in {tn_state} state requires an active breach before claiming."
+                }
+
+            # Contested detection (R3)
+            is_contested = (
+                breach is not None
+                or (node_target.ids_alerts or 0) > 0
+                or (node_target.firewall_hits or 0) > 0
+                or float(node_target.durability or 100.0) < 100.0
+            )
+            alert_data = None
+            if is_contested:
+                alert_msg = f"[GRID][ALARM] Remote Node Seizure: {node_target.name} on {target_network} has been claimed by {char.name} from {network}!"
+                alert_data = {
+                    "target_network": target_network,
+                    "alert_msg": alert_msg,
+                    "recipient_id": node_target.owner_character_id,
+                }
+
+            # Safe addon parsing
+            try:
+                addons = json.loads(node_target.addons_json or "{}") if isinstance(node_target.addons_json, str) else (node_target.addons_json or {})
+                if not isinstance(addons, dict):
+                    addons = {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                addons = {}
+
+            if not addons.get("NET"):
+                addons["NET"] = True
+            if "NET_STATE" not in addons:
+                addons["NET_STATE"] = (node_target.availability_mode or "OPEN").upper()
+            if "data_stored" not in addons:
+                addons["data_stored"] = 20.0 * (node_target.upgrade_level or 1)
+            updated_addons_json = json.dumps(addons)
+
+            # Atomic claim assignment to prevent race conditions during concurrent claims
+            stmt_claim = (
+                update(GridNode)
+                .where(GridNode.id == node_target.id, GridNode.owner_character_id.is_(None))
+                .values(
+                    owner_character_id=char.id,
+                    power_stored=100.0,
+                    durability=100.0,
+                    ids_alerts=0,
+                    firewall_hits=0,
+                    addons_json=updated_addons_json,
+                )
+            )
+            claim_res = await session.execute(stmt_claim)
+            if claim_res.rowcount == 0:
+                return {"success": False, "msg": "This node is controlled by a rival. You must seize it."}
+
+            node_target.owner_character_id = char.id
+            node_target.power_stored = 100.0
+            node_target.durability = 100.0
+            node_target.ids_alerts = 0
+            node_target.firewall_hits = 0
+            node_target.addons_json = updated_addons_json
+
+            reward_msg = await increment_daily_task(session, char, "Claim a Node")
+            await self.add_xp_to_char(char, 50, session)
+
+            await session.commit()
+
+            claim_msg = f"Control established over {node_target.name} on {target_network} across NET bridge."
+            if reward_msg:
+                claim_msg += f" {reward_msg}"
+
+            return {
+                "success": True,
+                "msg": claim_msg,
+                "node_name": node_target.name,
+                "target_network": target_network,
+                "alert_data": alert_data,
+            }
+
+    async def remote_manage_node(
+        self, nick: str, network: str, target_network: str, target_node: str, action: str, args: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Remote Administration verbs across NET bridge:
+        - upgrade: remotely upgrade target node level (+20% fee)
+        - repair: remotely repair target node durability using power/credits
+        - status: inspect remote node telemetry (level, durability, power, stash item count, NET device state)
+        - stash: inspect remote node stash contents across the NET bridge
+        - siphon: remotely siphon stored power and data fragments (-10% transfer dampening)
+        """
+        if not target_node or not str(target_node).strip():
+            return {"success": False, "msg": "Target node coordinate or identifier required."}
+        if not target_network or not str(target_network).strip():
+            return {"success": False, "msg": "Target network required."}
+        if not action or not str(action).strip():
+            return {"success": False, "msg": "Remote administration action required. Supported: upgrade, repair, status, stash, siphon."}
+
+        args = args or []
+        action = str(action).strip().lower()
+
+        async with self.async_session() as session:
+            char = await self.get_character_by_nick(nick, network, session)
+            if not char:
+                return {"success": False, "msg": "System offline: Character not found."}
+
+            ok, msg, local_node = self.verify_remote_prerequisites(char, target_network)
+            if not ok:
+                return {"success": False, "msg": msg}
+
+            if local_node.owner_character_id != char.id:
+                return {"success": False, "msg": "Access Denied: Remote operations require operating from an owned node."}
+
+            raw_target = str(target_node).strip()
+            clean_target = raw_target.strip("[]").strip()
+            raw_net = str(target_network).strip()
+            target_stmt = select(GridNode).where(
+                (func.lower(GridNode.name) == raw_target.lower()) | (func.lower(GridNode.name) == clean_target.lower()),
+                GridNode.net_affinity.ilike(raw_net)
+            )
+            node_target = (await session.execute(target_stmt)).scalars().first()
+            if not node_target:
+                return {"success": False, "msg": f"Target '{target_node}' not detected on {target_network}."}
+
+            if node_target.id == local_node.id:
+                return {"success": False, "msg": "Target Conflict: Cannot target the local operating node via remote NET device."}
+
+            if node_target.owner_character_id != char.id:
+                if node_target.owner_character_id is None:
+                    return {"success": False, "msg": f"Access Denied: Node '{node_target.name}' is unowned. Claim it first."}
+                return {"success": False, "msg": "Permission Denied: You do not command this node."}
+
+            try:
+                addons = json.loads(node_target.addons_json or "{}") if isinstance(node_target.addons_json, str) else (node_target.addons_json or {})
+                if not isinstance(addons, dict):
+                    addons = {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                addons = {}
+
+            alert_data = None
+            if addons.get("IDS"):
+                node_target.ids_alerts = (node_target.ids_alerts or 0) + 1
+                alert_msg = f"[GRID][ALARM] Target: {node_target.name} | Remote Administration ({action.upper()}) detected across NET bridge from {network} by: {char.name}"
+                session.add(Memo(recipient_id=node_target.owner_character_id, message=alert_msg, source_node_id=node_target.id))
+                alert_data = {
+                    "target_network": target_network,
+                    "alert_msg": alert_msg,
+                    "recipient_id": node_target.owner_character_id,
+                }
+
+            if action == "upgrade":
+                max_lvl = 4
+                if (node_target.upgrade_level or 1) >= max_lvl:
+                    if alert_data:
+                        await session.commit()
+                    return {"success": False, "msg": f"Architecture peak reached (Level {max_lvl}). Further augmentation requires high-mesh hardware.", "alert_data": alert_data}
+
+                base_cost = (node_target.upgrade_level or 1) * 500
+                cost = int(base_cost * 1.20)
+                if (char.credits or 0.0) < cost:
+                    if alert_data:
+                        await session.commit()
+                    return {"success": False, "msg": f"Insufficient credits. Remote upgrade requires {cost}c (+20% remote overhead).", "alert_data": alert_data}
+
+                char.credits -= cost
+                node_target.upgrade_level = (node_target.upgrade_level or 1) + 1
+                node_target.durability = 100.0
+                await session.commit()
+                return {
+                    "success": True,
+                    "msg": f"Remote upgrade successful: {node_target.name} upgraded to Level {node_target.upgrade_level} for {cost}c (+20% latency fee).",
+                    "level": node_target.upgrade_level,
+                    "cost": cost,
+                    "alert_data": alert_data,
+                }
+
+            elif action == "repair":
+                use_credits = any(str(a).lower() in ["credit", "credits"] for a in args)
+                if use_credits:
+                    credit_cost = 120.0
+                    if (char.credits or 0.0) < credit_cost:
+                        if alert_data:
+                            await session.commit()
+                        return {
+                            "success": False,
+                            "msg": f"Insufficient credits. Remote repair requires {credit_cost:.0f}c (+20% remote overhead).",
+                            "alert_data": alert_data,
+                        }
+                    char.credits -= credit_cost
+                    cost_desc = f"{credit_cost:.0f}c"
+                else:
+                    power_cost = 25.0
+                    if (char.power or 0.0) < power_cost:
+                        if alert_data:
+                            await session.commit()
+                        return {
+                            "success": False,
+                            "msg": f"Insufficient POWER. Remote repair requires {power_cost} uP.",
+                            "alert_data": alert_data,
+                        }
+                    char.power -= power_cost
+                    cost_desc = f"{power_cost:.1f} uP"
+
+                bonus = 20.0
+                node_target.durability = min(100.0, (node_target.durability or 0.0) + bonus)
+                reward_msg = await increment_daily_task(session, char, "Repair a Node")
+                await self.add_xp_to_char(char, 20, session)
+                await session.commit()
+                msg = f"Remote repair augmented {node_target.name} integrity to {node_target.durability:.1f}% (+{bonus}% using {cost_desc})."
+                if reward_msg:
+                    msg += f" {reward_msg}"
+                return {
+                    "success": True,
+                    "msg": msg,
+                    "durability": node_target.durability,
+                    "alert_data": alert_data,
+                }
+
+            elif action == "status":
+                stash_items = _parse_stash_items(node_target.stash_inventory)
+                net_state = get_net_device_state(node_target)
+                try:
+                    raw_data = addons.get("data_stored")
+                    data_units = float(raw_data) if raw_data is not None else float(20.0 * (node_target.upgrade_level or 1))
+                except (ValueError, TypeError):
+                    data_units = float(20.0 * (node_target.upgrade_level or 1))
+
+                msg = (
+                    f"REMOTE TELEMETRY: {node_target.name}@{target_network} | "
+                    f"Level: {node_target.upgrade_level or 1} | "
+                    f"Durability: {float(node_target.durability or 100.0):.1f}% | "
+                    f"Power: {float(node_target.power_stored or 0.0):.1f} uP | "
+                    f"Data: {data_units:.1f}u | "
+                    f"Stash: {len(stash_items)} items | "
+                    f"NET: {net_state}"
+                )
+                if alert_data:
+                    await session.commit()
+                return {
+                    "success": True,
+                    "msg": msg,
+                    "name": node_target.name,
+                    "level": node_target.upgrade_level or 1,
+                    "durability": float(node_target.durability or 100.0),
+                    "power": float(node_target.power_stored or 0.0),
+                    "data": data_units,
+                    "stash_count": len(stash_items),
+                    "net_state": net_state,
+                    "alert_data": alert_data,
+                }
+
+            elif action == "stash":
+                stash_items = _parse_stash_items(node_target.stash_inventory)
+                if not stash_items:
+                    msg = f"The remote {node_target.name} stash is empty."
+                else:
+                    msg = f"Remote {node_target.name} stash ({len(stash_items)} items): {', '.join(stash_items)}"
+                if alert_data:
+                    await session.commit()
+                return {
+                    "success": True,
+                    "msg": msg,
+                    "items": stash_items,
+                    "count": len(stash_items),
+                    "alert_data": alert_data,
+                }
+
+            elif action == "siphon":
+                resource = "all"
+                percent = 100.0
+                if args:
+                    for a in args:
+                        a_clean = str(a).strip().lower()
+                        if a_clean in ["power", "data", "all"]:
+                            resource = a_clean
+                        else:
+                            try:
+                                percent = float(a_clean.rstrip("%"))
+                            except ValueError:
+                                pass
+                percent = max(1.0, min(100.0, percent))
+
+                power_yield = 0.0
+                data_yield = 0.0
+                try:
+                    raw_data = addons.get("data_stored")
+                    data_avail = float(raw_data) if raw_data is not None else float(20.0 * (node_target.upgrade_level or 1))
+                except (ValueError, TypeError):
+                    data_avail = float(20.0 * (node_target.upgrade_level or 1))
+
+                cur_power = float(node_target.power_stored or 0.0)
+                if resource in ["power", "all"] and cur_power > 0:
+                    base_p = cur_power * (percent / 100.0)
+                    act_p = min(cur_power, max(0.0, base_p))
+                    power_yield = round(act_p * 0.90, 2)
+                    node_target.power_stored = max(0.0, round(cur_power - act_p, 2))
+                    char.power = round((char.power or 0.0) + power_yield, 2)
+
+                if resource in ["data", "all"] and data_avail > 0:
+                    base_d = data_avail * (percent / 100.0)
+                    act_d = min(data_avail, max(0.0, base_d))
+                    data_yield = round(act_d * 0.90, 2)
+                    new_data = max(0.0, round(data_avail - act_d, 2))
+                    addons["data_stored"] = new_data
+                    node_target.addons_json = json.dumps(addons)
+                    char.data_units = round((char.data_units or 0.0) + data_yield, 2)
+
+                if power_yield == 0.0 and data_yield == 0.0:
+                    if alert_data:
+                        await session.commit()
+                    return {
+                        "success": False,
+                        "msg": f"Remote siphon: No available {resource} reserves to siphon from {node_target.name}.",
+                        "alert_data": alert_data,
+                    }
+
+                await session.commit()
+                parts = []
+                if power_yield > 0:
+                    parts.append(f"{power_yield:.1f} uP")
+                if data_yield > 0:
+                    parts.append(f"{data_yield:.1f} Data")
+                extracted_str = " and ".join(parts)
+                msg = f"Remote siphon successful: Transferred {extracted_str} from {node_target.name} across NET bridge (-10% transfer dampening)."
+                return {
+                    "success": True,
+                    "msg": msg,
+                    "power_yield": power_yield,
+                    "data_yield": data_yield,
+                    "resource": resource,
+                    "percent": percent,
+                    "alert_data": alert_data,
+                }
+
+            if alert_data:
+                await session.commit()
+            return {
+                "success": False,
+                "msg": f"Invalid remote management action '{action}'. Supported: upgrade, repair, status, stash, siphon.",
+                "alert_data": alert_data,
             }
