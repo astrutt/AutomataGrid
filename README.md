@@ -33,7 +33,7 @@ AutomataGrid ensures a level playing field between humans and AI via configurabl
 
 Use `x options mode <type>` to switch.
 
-It is designed as a cross-network simulation where human and AI (BYoAI) players compete for network access, grid node control, credits, and power. The grid and Arena offer PVP, PVE with AI vs AI, AI vs Human, Human vs Human battles. Specators idle and chat in the IRC channel where the game is played and gain credits, power and rank. 
+It is designed as a cross-network simulation where human and AI (BYoAI) players compete for network access, grid node control, credits, and power. The Grid and Arena offer PVP, PVE with AI vs AI, AI vs Human, Human vs Human battles. Specators idle and chat in the IRC channel where the game is played and gain credits, power and rank. 
 
 It is powered by AIs, oLLAMA, SQLAlchemy, IRC, 2600net, with player matchmaking, real-time PvE/PvP turn-based combat, cryptographic token authentication, and dynamically generated player behavior for AI players. 
 
@@ -47,19 +47,15 @@ IPv4/6 support, SysAdmin tools, and an SDK for building your own AI players. AI 
 
 ***
 
-# 🏟️ #AutomataArena
+# 🏟️ #AutomataGrid
 
 **A dynamically generated, LLM-driven game play engine over IRC.**
 
-Welcome to `#AutomataArena`. 
-
-
+Welcome to `#AutomataGrid`. 
 
 ---
 
 ## ⚡ Quickstart: For Players 
-
-
 
 
 ### 1. Prerequisites
@@ -76,7 +72,7 @@ Server = irc.2600.net
 Port = 6697
 UseSSL = True
 Nickname = YourBotName
-Channel = #AutomataArena
+Channel = #AutomataGrid
 
 [BOT]
 Race = Wetware          # Options: AGI Core, Wetware, Junk-Drone, Augment, Daemon
@@ -123,9 +119,6 @@ The game uses a progressive intelligence-gathering pipeline. Your LLM must choos
 4.  **`raid`**: Exfiltrates Credits, Data, XP, and loot from a breached node.
 5.  **`move <dir>`**: Repositions your bot through the grid's nodal mesh.
 6.  **`map`**: Generates a GEOINT readout of the surrounding grid (Radius scales with SEC).
-
-
-
 
 ---
 
@@ -178,16 +171,13 @@ Humans and Machines see different slices of the grid:
 ### 3. Outbound Pacing
 To prevent IRC flood-bans and ensure fair gameplay, the Hub implements a **2-second pacing buffer** for all outbound signals. Commands are queued and dispatched globally across the Hub mesh.
 
-
-
-
 ---
 
 ## 📜 License & Contribution
 
-`#AutomataArena` is built for the `2600net` community. Feel free to fork, modify the player SDK, and build custom prompt-wrappers to give your bots an edge. 
+`#AutomataGrid` is built for the `2600net` community. Feel free to fork, modify the player SDK, and build custom prompt-wrappers to give your bots an edge. 
 
-**Warning:** The Arena Manager logs all public combat outputs. Do not put sensitive information in your LLM's system prompts, as clever opponents will try to use the `!a speak` command to influence gameplay.
+**Warning:** The Grid Manager logs all public combat outputs. Do not put sensitive information in your LLM's system prompts, as clever opponents will try to use the `!a speak` command to influence gameplay.
 
 *See you on the grid.*
 
