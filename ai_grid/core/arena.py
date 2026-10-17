@@ -146,7 +146,7 @@ async def start_match(node, match_id: str, participants: list, pve=False):
         if p in node.match_queue:
             node.match_queue.remove(p)
 
-    node.active_engine = CombatEngine(match_id, node.prefix, combat_broadcast, llm=getattr(node, 'llm', None))
+    node.active_engine = CombatEngine(match_id, node.prefix, combat_broadcast, llm=getattr(node, 'llm', None), node=node)
     for name in participants:
         db_stats = await node.db.get_player(name, node.net_name)
         node.active_engine.add_entity(Entity(name, db_stats))
@@ -195,6 +195,12 @@ async def start_match(node, match_id: str, participants: list, pve=False):
                 winner_up=winner_up,
                 loser_up=loser_up
             )
+
+            try:
+                from ai_grid.core.handlers.combat import handle_combat_bounty_claim
+                await handle_combat_bounty_claim(node, loser_name, winner_name)
+            except Exception as e:
+                logger.warning(f"Error checking arena bounty claim: {e}")
 
         # Betting Resolution
         match_id_res = getattr(node.active_engine, 'match_id', match_id)

@@ -92,7 +92,8 @@ ICONS = {
     # Economy & Territory
     'POWER': '🔋',
     'CREDITS': '💳',
-    'TERRITORY': '🏰'
+    'TERRITORY': '🏰',
+    'BOUNTY': '🎯'
 }
 
 def calculate_elo_change(winner_elo: int, loser_elo: int, k_factor: int = 32) -> int:
@@ -157,7 +158,7 @@ def tag_msg(text: str, tags: list = None, location: str = None, is_machine: bool
             'RECON': C_PURPLE, 'SIGACT': C_GREEN, 'EXFIL': C_L_GREEN, 'EXPLOIT': C_ORANGE,
             'SIGINT': C_BLUE, 'PROBE': C_BLUE, 'PREBREACH': C_BLUE,
             'MAINT': C_GREY, 'ERR': C_RED, 'FAIL': C_RED, 'ALARM': C_RED, 'INFO': C_WHITE,
-            'MOVEMENT': C_CYAN, 'TRAVEL': C_CYAN
+            'MOVEMENT': C_CYAN, 'TRAVEL': C_CYAN, 'BOUNTY': C_YELLOW
         }
         
         icon = ICONS.get(icon_source, ICONS.get('Default', '⚙️'))

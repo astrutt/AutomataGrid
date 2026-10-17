@@ -20,7 +20,7 @@ from ai_grid.models import (
     PulseEvent, IncursionEvent, IncursionDefender, RaidTarget,
     DiscoveryRecord, BreachRecord, ItemTemplate, InventoryItem, 
     MainframeTask, AuctionListing, Leaderboard, CipherSession, GlobalMarket, Memo,
-    ArenaBet, CharacterSkill
+    ArenaBet, CharacterSkill, Bounty
 )
 from ai_grid.database.core import DB_FILE, logger, CONFIG, GRID_EXPANSION, GRID_CONNECTIONS, BRIDGE_MAPPING, LOOT_TEMPLATES
 from ai_grid.database.repositories.skill_repo import SkillRepository
@@ -46,6 +46,7 @@ from ai_grid.database.repositories.expansion_repo import ExpansionRepository
 from ai_grid.database.repositories.remote_net_repo import RemoteNetRepository, get_net_device_state
 from ai_grid.database.repositories.betting_repo import BettingRepository
 from ai_grid.database.repositories.reputation_repo import ReputationRepository
+from ai_grid.database.repositories.bounty_repo import BountyRepository
 
 class ArenaDB:
     def __init__(self, db_path=DB_FILE):
@@ -77,6 +78,7 @@ class ArenaDB:
         self.reputation = ReputationRepository(self.async_session)
         self.betting = BettingRepository(self.async_session)
         self.skill = SkillRepository(self.async_session)
+        self.bounty = BountyRepository(self.async_session)
         
         # Grid domains
         self.navigation = NavigationRepository(self.async_session)
@@ -190,6 +192,11 @@ class ArenaDB:
     async def check_defender_spawn(self, *a, **k): return await self.reputation.check_defender_spawn(*a, **k)
     async def check_node_entry_encounter(self, *a, **k): return await self.reputation.check_node_entry_encounter(*a, **k)
     async def is_bounty_eligible(self, *a, **k): return await self.reputation.is_bounty_eligible(*a, **k)
+    async def get_active_bounties(self, *a, **k): return await self.bounty.get_active_bounties(*a, **k)
+    async def get_bounty_for_target(self, *a, **k): return await self.bounty.get_bounty_for_target(*a, **k)
+    async def post_bounty(self, *a, **k): return await self.bounty.post_bounty(*a, **k)
+    async def ensure_mcp_bounty(self, *a, **k): return await self.bounty.ensure_mcp_bounty(*a, **k)
+    async def claim_bounty(self, *a, **k): return await self.bounty.claim_bounty(*a, **k)
     async def craft_item(self, *a, **k): return await self.economy.craft_item(*a, **k)
     async def get_craft_menu(self, *a, **k): return await self.economy.get_craft_menu(*a, **k)
     async def claim_node(self, *a, **k): return await self.territory.claim_node(*a, **k)

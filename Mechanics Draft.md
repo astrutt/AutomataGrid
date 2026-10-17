@@ -618,7 +618,7 @@ Listed in order of payoff vs. complexity:
 | 6 | Timed combat status effects | Implemented |
 | 7 | Skill expansion (recon, siphon, stealth, fortify) | Implemented |
 | 8 | Node stash system | Implemented |
-| 9 | Bounty board | Planned |
+| 9 | Bounty board | Implemented |
 | 10 | Remote node ownership claiming | Planned (post-launch / later) |
 | 11 | MCP Grid Messenger bot | Planned |
 

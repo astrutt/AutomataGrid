@@ -196,4 +196,7 @@ class Spectator(Base):
             'rank_title': self.rank_title,
         }
 
-
+try:
+    from ai_grid.models import Bounty
+except ImportError:
+    pass

@@ -3,8 +3,8 @@ import random
 from datetime import datetime, timezone
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import func
-from ai_grid.models import Character, Player, NetworkAlias, GridNode, InventoryItem, ItemTemplate
+from sqlalchemy import func, update
+from ai_grid.models import Character, Player, NetworkAlias, GridNode, InventoryItem, ItemTemplate, Bounty
 from ai_grid.database.core import logger, MOB_ROSTER, LOOT_TABLE, CONFIG, increment_daily_task
 from ai_grid.grid_utils import calculate_elo_change
 
@@ -228,11 +228,36 @@ class CombatRepository(BaseRepository):
                 target.credits -= looted
                 attacker.credits += looted
                 
+                # Check and claim active bounty if exists
+                stmt_bounty = select(Bounty).where(
+                    func.lower(Bounty.target_nick).in_([target.name.lower(), target_name.lower()]),
+                    func.lower(Bounty.network_name) == network.lower(),
+                    Bounty.status == "ACTIVE"
+                )
+                bounty = (await session.execute(stmt_bounty)).scalars().first()
+                bounty_msg = None
+                is_self = (attacker.id == target.id) or bool(attacker.player_id and target.player_id and attacker.player_id == target.player_id)
+                if bounty and not is_self and bounty.status == "ACTIVE":
+                    stmt_claim = (
+                        update(Bounty)
+                        .where(Bounty.id == bounty.id, Bounty.status == "ACTIVE")
+                        .values(
+                            status="CLAIMED",
+                            claimed_by=attacker.name,
+                            claimed_at=datetime.now(timezone.utc)
+                        )
+                    )
+                    res_claim = await session.execute(stmt_claim)
+                    if res_claim.rowcount == 1:
+                        attacker.credits += bounty.reward_credits
+                        bounty_msg = f" [Bounty Claimed: +{bounty.reward_credits:.1f}c]"
+
                 # Unified Ejection Logic
                 await self._eject_character(session, target)
                 
                 await session.commit()
-                return True, f"{attacker.name} struck {target.name} for {final_dmg} DMG! {target.name} flatlines... Ejected to Spawn.", None
+                extra_str = bounty_msg or ""
+                return True, f"{attacker.name} struck {target.name} for {final_dmg} DMG! {target.name} flatlines... Ejected to Spawn.{extra_str}", None
                 
             await session.commit()
             total_stats = target.cpu + target.ram + target.bnd + target.sec + target.alg

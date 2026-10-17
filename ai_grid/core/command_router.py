@@ -181,6 +181,8 @@ class CommandRouter:
                 asyncio.create_task(handlers.handle_training(self.node, source_nick, reply_target))
             elif verb == "rep":
                 asyncio.create_task(handlers.handle_rep_view(self.node, source_nick, reply_target))
+            elif verb in ["bounty", "bounties"]:
+                asyncio.create_task(handlers.handle_bounty(self.node, source_nick, args, reply_target))
             elif verb in ["skill", "skills"]:
                 asyncio.create_task(handlers.handle_skill(self.node, source_nick, args, reply_target))
             elif verb == "craft":

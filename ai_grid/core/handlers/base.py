@@ -58,6 +58,7 @@ async def handle_help(node, nick: str, args: list, reply_target: str):
         "powergen": {"desc": "Active stability-based power generation.", "syntax": "powergen"},
         "train": {"desc": "Recover status and stability via training.", "syntax": "train"},
         "skill": {"desc": "Character skill progression, training, and modifiers.", "syntax": "skill <list|<name>|start|train|forget|quit>"},
+        "bounty": {"desc": "Inspect, list, check, or post bounties on wanted personas.", "syntax": "bounty [list|check <nick>|post <nick> <credits> [reason]]"},
         "spectator": {"desc": "View or join the IdleRPG. Ranks earn credits by idling.", "syntax": "spectator [stats]"},
         "news": {"desc": "Display the latest Grid SIGACTs/News ticker.", "syntax": "news"},
         "engage": {"desc": "Step into a pending Grid Bug encounter.", "syntax": "engage"},
@@ -106,7 +107,7 @@ async def handle_help(node, nick: str, args: list, reply_target: str):
     help_categories = {
         "🧭 NAVIGATION": ["grid", "move", "explore", "probe", "map", "flee"],
         "🆔 IDENTITY": ["register", "info", "tasks", "options", "spectator", "news", "memos", "ping", "version"],
-        "💰 ECONOMY": ["shop", "buy", "sell", "auction", "market"],
+        "💰 ECONOMY": ["shop", "buy", "sell", "auction", "market", "bounty"],
         "🏗️ THE GIBSON": ["mainframe", "compile", "assemble", "use"],
         "⚡ THE PULSE": ["collect", "patch", "defend"],
         "📡 ANALYTICS": ["economy", "gridpower", "gridstability", "networks", "about"],

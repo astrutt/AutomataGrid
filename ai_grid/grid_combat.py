@@ -285,11 +285,12 @@ class Entity:
         self.status_effects.clear()
 
 class CombatEngine:
-    def __init__(self, match_id, network_prefix, send_callback, llm=None):
+    def __init__(self, match_id, network_prefix, send_callback, llm=None, node=None):
         self.match_id = match_id
         self.prefix = network_prefix 
         self.send_callback = send_callback 
         self.llm = llm
+        self.node = node
         self.turn_events = []
         self.last_turn_events = []
         self.entities = {}
@@ -596,12 +597,43 @@ class CombatEngine:
             if getattr(self, 'sleep_interval', 0.5) > 0:
                 await asyncio.sleep(self.sleep_interval)
 
+        # Check for fatal takedown / PvP bounty claim
+        if getattr(self, 'node', None):
+            try:
+                from ai_grid.core.handlers.combat import handle_combat_bounty_claim
+                for ev in self.turn_events:
+                    if ev.get("fatal") and ev.get("actor") and ev.get("target"):
+                        t_name = ev["target"]
+                        k_name = ev["actor"]
+                        t_ent = self.entities.get(t_name)
+                        k_ent = self.entities.get(k_name)
+                        if t_ent and getattr(t_ent, 'is_npc', False):
+                            continue
+                        if k_ent and getattr(k_ent, 'is_npc', False):
+                            continue
+                        if t_name.lower() != k_name.lower():
+                            await handle_combat_bounty_claim(self.node, t_name, k_name)
+            except Exception as e:
+                logger.warning(f"Error checking fatal takedown bounty claim: {e}")
+
         self.last_turn_events = list(self.turn_events)
         self.turn_events = []
         self.turn += 1
         is_active = self._check_match_status()
         if not is_active:
             logger.info(f"Match {self.match_id} triggered completion condition.")
+            if getattr(self, 'node', None):
+                try:
+                    from ai_grid.core.handlers.combat import handle_combat_bounty_claim
+                    survivors = [e.name for e in self.entities.values() if e.is_alive and not getattr(e, 'is_npc', False)]
+                    defeated = [e.name for e in self.entities.values() if not e.is_alive and not getattr(e, 'is_npc', False)]
+                    if len(survivors) == 1 and defeated:
+                        killer_name = survivors[0]
+                        for target_name in defeated:
+                            if target_name.lower() != killer_name.lower():
+                                await handle_combat_bounty_claim(self.node, target_name, killer_name)
+                except Exception as e:
+                    logger.warning(f"Error checking bounty claim on match conclusion: {e}")
         return is_active
 
     def _execute_attack(self, attacker, target_name: str, mode: str = "kinetic", cyber_effect: str = None):

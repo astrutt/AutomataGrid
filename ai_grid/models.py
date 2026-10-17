@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Float, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Float, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.types import TypeDecorator
 from datetime import datetime, timezone
@@ -428,4 +428,50 @@ try:
     from ai_grid.database.core import Spectator
 except ImportError:
     pass
+
+# ==========================================
+# 6. BOUNTY SYSTEM MODEL
+# ==========================================
+class Bounty(Base):
+    __tablename__ = 'bounties'
+    __table_args__ = (
+        Index('ix_bounties_target_net_status', 'target_nick', 'network_name', 'status'),
+        Index('ix_bounties_network_status', 'network_name', 'status'),
+        Index('uq_bounties_active_target_network', 'target_nick', 'network_name', unique=True, sqlite_where=text("status = 'ACTIVE'")),
+    )
+
+    id = Column(Integer, primary_key=True)
+    target_nick = Column(String(collation='NOCASE'), index=True, nullable=False)
+    issuer_nick = Column(String, nullable=False, default="MCP")
+    network_name = Column(String(collation='NOCASE'), index=True, nullable=False)
+    reward_credits = Column(Float, default=0.0, nullable=False)
+    reason = Column(String, nullable=False, default="")
+    created_at = Column(AwareDateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    status = Column(String, index=True, default="ACTIVE", nullable=False)  # ACTIVE, CLAIMED, EXPIRED, CANCELLED
+    claimed_by = Column(String, nullable=True)
+    claimed_at = Column(AwareDateTime, nullable=True)
+
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'target_nick': self.target_nick,
+            'issuer_nick': self.issuer_nick,
+            'network_name': self.network_name,
+            'reward_credits': self.reward_credits,
+            'reason': self.reason,
+            'created_at': self.created_at,
+            'status': self.status,
+            'claimed_by': self.claimed_by,
+            'claimed_at': self.claimed_at,
+        }
+
 

@@ -100,7 +100,7 @@ async def start_pvp_combat(node, attacker_name: str, defender_name: str, action:
                 await node.send(f"PRIVMSG {p} :{msg}")
 
     prefix = getattr(node, 'prefix', '!a')
-    engine = CombatEngine(match_id, prefix, combat_broadcast, llm=getattr(node, 'llm', None))
+    engine = CombatEngine(match_id, prefix, combat_broadcast, llm=getattr(node, 'llm', None), node=node)
 
     for name in [attacker_name, defender_name]:
         db_stats = None
@@ -502,4 +502,36 @@ async def handle_bet(node, nick: str, args: list, reply_target: str):
     else:
         await node.send(f"{reply_method} {private_target} :{tag_msg(msg, action='ARENA', result='SUCCESS', nick=nick, is_machine=machine_mode)}")
         await node.send(f"PRIVMSG {broadcast_chan} :{tag_msg(format_text(f'{nick} placed a {amount}c bet on {fighter_match}!', C_CYAN), action='ARENA', tags=['BETTING'])}")
+
+
+async def handle_combat_bounty_claim(node, target_name: str, killer_name: str):
+    """
+    R3: When PvP combat ends in a fatal takedown (target.hp <= 0 or target defeated),
+    check if the defeated entity has an active bounty.
+    If an active bounty exists and killer is not the target itself, automatically invoke
+    node.db.bounty.claim_bounty(target, killer, net_name) and broadcast channel announcement:
+    [BOUNTY CLAIMED] {killer} neutralized wanted fugitive {target} and collected {credits:.1f}c bounty! Issued by: {issuer}.
+    """
+    if not node or not hasattr(node, 'db') or not hasattr(node.db, 'bounty'):
+        return None
+    if not target_name or not killer_name or target_name.lower() == killer_name.lower():
+        return None
+
+    net_name = getattr(node, 'net_name', 'rizon')
+    # Check active bounty
+    bounty = await node.db.bounty.get_bounty_for_target(target_name, net_name)
+    if not bounty:
+        return None
+
+    success, msg, claimed = await node.db.bounty.claim_bounty(target_name, killer_name, net_name)
+    if success and claimed:
+        chan = node.config.get('channel', '#arena') if getattr(node, 'config', None) else '#arena'
+        announcement = f"[BOUNTY CLAIMED] {killer_name} neutralized wanted fugitive {claimed.target_nick} and collected {claimed.reward_credits:.1f}c bounty! Issued by: {claimed.issuer_nick}."
+        if hasattr(node, 'send'):
+            await node.send(f"PRIVMSG {chan} :{tag_msg(announcement, tags=['BOUNTY', 'SIGACT'])}")
+        return claimed
+    return None
+
+resolve_combat_bounty_claim = handle_combat_bounty_claim
+conclude_pvp_combat = handle_combat_bounty_claim
 
