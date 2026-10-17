@@ -6,12 +6,13 @@ Players can fight, explore, claim network nodes, craft zero-day exploits, and pa
 
 ## ⚡ Core Features
 
-* **The Grid (50x50 Procedural World):** Navigate a massive map containing 2,500 nodes. Discover corporate data centers, military networks, black markets, and voids.
+* **The Grid (50x50 Procedural World):** Navigate a massive map containing 2,500 nodes clustered across 14 diverse network and regional types (infrastructure, corporate, civic, defense, voids).
 * **Exploration & Hacking Loop:** Progress through a realistic breach cycle: GEOINT mapping, probing, hacking, siphoning data, and exploiting zero-days.
-* **Territory Control:** Claim grid nodes, install hardware (Firewalls, HoneyPots, NET Bridges), and extract passive power/credits. 
-* **PvP & PvE Cyber-Combat:** Turn-based combat system using Unit Power (uP). Balance kinetic strikes (CPU/RAM) against cyber injections (BND/SEC). 
-* **Spectator Economy:** Lurkers in the IRC channel automatically register as Spectators, earning passive XP and Credits that can be used to drop items into active Arena fights.
-* **Cross-Network Operations:** Install NET devices to bridge your local node to remote IRC networks (e.g., attacking a Rizon node from 2600net).
+* **Territory Control & Remote Operations:** Claim local and remote grid nodes across NET bridges, install hardware (Firewalls, HoneyPots, NET Bridges), and manage remote outposts (upgrade, repair, stash, and remote siphoning).
+* **PvP & PvE Cyber-Combat with Timed Status Effects:** Turn-based combat system using Unit Power (uP) featuring critical-strike status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`), territory defense rules, and safe open-world duels.
+* **Spectator Economy:** Lurkers in the IRC channel automatically register as Spectators, earning passive hourly XP and Credits that can be used to drop items into active Arena fights.
+* **Character Skills & Stash Storage:** Learn up to 4 concurrent skills across 8 disciplines, and store mission loadouts at claimed node stashes beyond personal carry capacity.
+* **Bounty Board & Reputation:** Track 0–10 MCP Heat and regional standings; hunt wanted fugitives or place player-funded credit bounties with automated combat payouts.
 
 ## 🚀 Quickstart (Player Path)
 
