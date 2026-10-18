@@ -82,6 +82,10 @@ class BaseRepository:
         Calculates a balanced reward package (XP, Credits, Data) for MCP actions.
         Scaling: 4 Big tasks to level at L1, 100 Big tasks to level at L50.
         """
+        try:
+            level = max(1, int(float(level))) if level is not None else 1
+        except (TypeError, ValueError, OverflowError):
+            level = 1
         rewards = CONFIG.get('mechanics', {}).get('mcp_rewards')
         if not rewards:
             rewards = {

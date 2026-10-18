@@ -83,10 +83,19 @@ Track and hunt high-profile targets or place contracts:
   - `!a skill start <name>` — begin training a skill (`powergen`, `attack`, `defend`, `hack`, `recon`, `siphon`, `stealth`, `fortify`).
   - `!a skill train` — perform an hourly training session (24 sessions per level, max level 4).
 
+## Cooperative World Events (Incursions)
+When the MCP detects an anomaly, a network-wide alert is broadcast to the channel:
+- `!a defend` or `!a defend <node>` — register defense protocols against an active incursion from anywhere on the network.
+- **Tiers & Defense**: Tiers 1–4 (Easy, Medium, Hard, Epic) require 1, 2, 4, or 8 defenders within a 5-minute window.
+- **Rewards**: Successful defense awards **Credits**, **Data units**, **XP**, and **Unit Power (uP)** scaled by mob tier to all defenders.
+- **Heat Reduction**: Defeating incursion threats relieves MCP attention, reducing defender MCP Heat by `-1.0` per mob tier.
+- **Dynamic Spawns**: Incursion frequencies scale with active network population; zero players online results in zero spawns.
+
 ## Session Authentication & Login
 
 If your IRC nickname is not registered with NickServ (`+r`), you can authenticate your character session using:
 - `!a login <name> <key>`
 
 Where `<key>` is the secret auth token returned to you during character registration.
+
 

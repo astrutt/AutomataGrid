@@ -5,6 +5,7 @@ import time
 import datetime
 from datetime import timezone
 import random
+import math
 from ai_grid.grid_utils import format_text, tag_msg, C_GREEN, C_CYAN, C_RED, C_YELLOW
 
 logger = logging.getLogger("manager")
@@ -318,6 +319,136 @@ INCURSION_SCHEDULE = {
     4: {'label': 'Epic', 'interval': 43200, 'players': 8, 'chance': 0.15},
 }
 
+TIER_POPULATION_GATES = {
+    1: 1,
+    2: 2,
+    3: 4,
+    4: 6,
+}
+
+def count_active_players(node) -> int:
+    """
+    Measures active player population on the network node.
+    Calculates active_count from node.channel_users (users with recent activity / chat lines)
+    or authenticated in node.authenticated_sessions.
+    Falls back to 0 if node does not have channel_users or authenticated_sessions.
+    Excludes the bot's own nickname if present.
+    """
+    active_users = set()
+
+    # 1. Authenticated sessions
+    auth_sessions = getattr(node, 'authenticated_sessions', None)
+    if isinstance(auth_sessions, dict):
+        for nick in auth_sessions.keys():
+            if nick:
+                active_users.add(str(nick).lower())
+    elif isinstance(auth_sessions, (list, set, tuple)):
+        for nick in auth_sessions:
+            if nick:
+                active_users.add(str(nick).lower())
+
+    # 2. Channel users
+    chan_users = getattr(node, 'channel_users', None)
+    if isinstance(chan_users, dict):
+        now_ts = time.time()
+        for nick, data in chan_users.items():
+            if not nick:
+                continue
+            is_active = False
+            if isinstance(data, dict):
+                chat_val = data.get('chat_lines')
+                try:
+                    if chat_val is not None and int(chat_val) > 0:
+                        is_active = True
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                if not is_active and (data.get('active') or data.get('recent_activity')):
+                    is_active = True
+                elif not is_active and 'last_active' in data:
+                    try:
+                        if now_ts - float(data['last_active']) <= 3600:
+                            is_active = True
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+            elif isinstance(data, (int, float)):
+                try:
+                    if not (isinstance(data, float) and (math.isnan(data) or math.isinf(data))) and data > 0:
+                        is_active = True
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            elif isinstance(data, bool) and data:
+                is_active = True
+            if is_active:
+                active_users.add(str(nick).lower())
+    elif isinstance(chan_users, (list, set, tuple)):
+        for item in chan_users:
+            if item:
+                active_users.add(str(item).lower())
+
+    # 3. Filter out bot's own nickname if present
+    bot_nick = None
+    node_cfg = getattr(node, 'config', None)
+    if isinstance(node_cfg, dict):
+        bot_nick = node_cfg.get('nickname')
+    if not bot_nick and hasattr(node, 'nickname'):
+        bot_nick = node.nickname
+    if bot_nick:
+        active_users.discard(str(bot_nick).lower())
+
+    return len(active_users)
+
+def calculate_effective_incursion_chance(tier: int, data: dict, active_count: int, node=None) -> float:
+    """
+    Calculates activity-scaled spawn chance.
+    Zero Activity = Zero Spawns (0.0).
+    If active_count > 0: min(max_chance, base_chance * (active_count / baseline_divisor)).
+    """
+    try:
+        if active_count is not None and not (isinstance(active_count, float) and (math.isnan(active_count) or math.isinf(active_count))):
+            active_count = int(float(active_count))
+        else:
+            active_count = 0
+    except (TypeError, ValueError, OverflowError):
+        active_count = 0
+
+    if active_count <= 0:
+        return 0.0
+
+    if not isinstance(data, dict):
+        data = {}
+
+    node_cfg = getattr(node, 'config', None)
+    mech_cfg = (node_cfg.get('mechanics') if isinstance(node_cfg, dict) else None) or {}
+    if not isinstance(mech_cfg, dict):
+        mech_cfg = {}
+
+    base_chance_val = data.get('base_chance', data.get('chance', mech_cfg.get('incursion_base_chance', 0.20)))
+    try:
+        base_chance = float(base_chance_val)
+        if math.isnan(base_chance) or math.isinf(base_chance) or base_chance < 0.0:
+            base_chance = 0.20
+    except (TypeError, ValueError, OverflowError):
+        base_chance = 0.20
+
+    baseline_divisor_val = data.get('baseline_divisor', mech_cfg.get('incursion_baseline_divisor', 4.0))
+    try:
+        baseline_divisor = float(baseline_divisor_val)
+        if math.isnan(baseline_divisor) or math.isinf(baseline_divisor) or baseline_divisor <= 0.0:
+            baseline_divisor = 4.0
+    except (TypeError, ValueError, OverflowError):
+        baseline_divisor = 4.0
+
+    max_chance_val = data.get('max_chance', mech_cfg.get('incursion_max_chance', data.get('chance', base_chance)))
+    try:
+        max_chance = float(max_chance_val)
+        if math.isnan(max_chance) or math.isinf(max_chance) or max_chance < 0.0:
+            max_chance = float(base_chance)
+    except (TypeError, ValueError, OverflowError):
+        max_chance = float(base_chance)
+
+    chance_calc = base_chance * (float(active_count) / baseline_divisor)
+    return max(0.0, min(1.0, max_chance, chance_calc))
+
 async def incursion_event_loop(node):
     """Spawns Cooperative World Events semi-randomly."""
     await asyncio.sleep(180) # Stagger start 3 mins
@@ -332,73 +463,112 @@ async def incursion_event_loop(node):
         try:
             await asyncio.sleep(600) # Check every 10 minutes
             now_ts = time.time()
+
+            channel = "#automatagrid"
+            if isinstance(getattr(node, 'config', None), dict) and node.config.get('channel'):
+                channel = node.config['channel']
+            elif getattr(node, 'channel', None):
+                channel = node.channel
             
             # Expire active first
             notifications = await node.db.incursion.expire_incursions(node.net_name, getattr(node, 'llm', None))
             for alert in notifications:
-                await node.send(f"PRIVMSG {node.config['channel']} :{tag_msg(format_text(alert, C_RED), tags=['INCURSION'])}")
+                await node.send(f"PRIVMSG {channel} :{tag_msg(format_text(alert, C_RED), tags=['INCURSION'])}")
+                
+            active_count = count_active_players(node)
                 
             # Spawn new
             for tier, data in schedule.items():
-                if now_ts - data['last_check'] >= data['interval']:
+                if now_ts - data['last_check'] >= data.get('interval', 1800):
                     data['last_check'] = now_ts
-                    if random.random() <= data['chance']:
-                        target_node = None
-                        if hasattr(node.db, 'incursion') and hasattr(node.db.incursion, 'get_random_incursion_node'):
-                            try:
-                                target_node = await node.db.incursion.get_random_incursion_node(node.net_name)
-                            except Exception as e:
-                                logger.error(f"Error fetching incursion node on {node.net_name}: {e}")
+
+                    # Tier Population Gate
+                    try:
+                        tier_key = int(float(tier)) if tier is not None else tier
+                    except (TypeError, ValueError, OverflowError):
+                        tier_key = tier
+                    fallback_gate = tier_key if isinstance(tier_key, int) else 1
+                    raw_gate = data.get('population_gate', TIER_POPULATION_GATES.get(tier_key, fallback_gate))
+                    try:
+                        required_gate = int(float(raw_gate))
+                    except (TypeError, ValueError, OverflowError):
+                        required_gate = 1
+
+                    if active_count < required_gate:
+                        continue
+
+                    # Dynamic Activity-Based Chance Scaling
+                    effective_chance = calculate_effective_incursion_chance(tier, data, active_count, node)
+                    if effective_chance <= 0.0 or random.random() > effective_chance:
+                        continue
                         
-                        # If get_random_incursion_node is available and returned None, no valid unoccupied nodes exist
-                        if hasattr(node.db, 'incursion') and hasattr(node.db.incursion, 'get_random_incursion_node') and target_node is None:
-                            logger.info(f"No available incursion nodes on {node.net_name}.")
-                            continue
-                        
-                        target_name = getattr(target_node, 'name', '') or ''
-                        target_region = getattr(target_node, 'region_type', '') or ''
-                        target_id = getattr(target_node, 'id', None)
-                        
-                        mob_name = None
-                        if getattr(node, 'llm', None) and hasattr(node.llm, 'generate_incursion_mob_name'):
-                            try:
-                                mob_name = await node.llm.generate_incursion_mob_name(tier, target_name, target_region)
-                            except Exception as e:
-                                logger.error(f"Error generating mob name on {node.net_name}: {e}")
-                        if not mob_name:
-                            from ai_grid.grid_llm import FALLBACK_ROSTER
-                            mob_name = random.choice(FALLBACK_ROSTER.get(tier, FALLBACK_ROSTER[1]))
-                        
+                    target_node = None
+                    net_name_val = getattr(node, 'net_name', 'default')
+                    if hasattr(node, 'db') and hasattr(node.db, 'incursion') and hasattr(node.db.incursion, 'get_random_incursion_node'):
                         try:
-                            incursion = await node.db.incursion.spawn_incursion(
-                                node.net_name, 
-                                inc_type=mob_name, 
-                                tier=tier,
-                                reward=500.0 * tier,
-                                duration_mins=5,
-                                target_node_id=target_id
-                            )
-                        except TypeError:
-                            incursion = await node.db.incursion.spawn_incursion(
-                                node.net_name, 
-                                inc_type=mob_name, 
-                                tier=tier,
-                                reward=500.0 * tier,
-                                duration_mins=5
-                            )
-                        
-                        if incursion:
-                            node_name = incursion.get('node_name', target_name)
-                            difficulty_label = data['label']
-                            players = data['players']
-                            msg = f"WORLD EVENT: A Tier {tier} ({difficulty_label}) anomaly [{mob_name}] has breached {node_name}! Requires {players} defenders. Use '!a defend {node_name}' within 5 minutes!"
-                            await node.send(f"PRIVMSG {node.config['channel']} :{tag_msg(format_text(msg, C_RED, bold=True), tags=['INCURSION', 'URGENT'])}")
-                            break # Only spawn one type per tick to prevent spam
+                            target_node = await node.db.incursion.get_random_incursion_node(net_name_val)
+                        except Exception as e:
+                            logger.error(f"Error fetching incursion node on {net_name_val}: {e}")
+                    
+                    # If get_random_incursion_node is available and returned None, no valid unoccupied nodes exist
+                    if hasattr(node, 'db') and hasattr(node.db, 'incursion') and hasattr(node.db.incursion, 'get_random_incursion_node') and target_node is None:
+                        logger.info(f"No available incursion nodes on {net_name_val}.")
+                        continue
+                    
+                    target_name = getattr(target_node, 'name', '') or ''
+                    target_region = getattr(target_node, 'region_type', '') or ''
+                    target_id = getattr(target_node, 'id', None)
+                    
+                    mob_name = None
+                    if getattr(node, 'llm', None) and hasattr(node.llm, 'generate_incursion_mob_name'):
+                        try:
+                            mob_name = await node.llm.generate_incursion_mob_name(tier, target_name, target_region)
+                        except Exception as e:
+                            logger.error(f"Error generating mob name on {net_name_val}: {e}")
+                    if not mob_name:
+                        from ai_grid.grid_llm import FALLBACK_ROSTER
+                        try:
+                            roster_tier = int(float(tier)) if tier is not None else 1
+                        except (TypeError, ValueError, OverflowError):
+                            roster_tier = 1
+                        mob_name = random.choice(FALLBACK_ROSTER.get(roster_tier, FALLBACK_ROSTER[1]))
+
+                    try:
+                        tier_int = int(float(tier)) if tier is not None else 1
+                    except (TypeError, ValueError, OverflowError):
+                        tier_int = 1
+                    tier_multiplier = max(1, tier_int)
+                    
+                    try:
+                        incursion = await node.db.incursion.spawn_incursion(
+                            net_name_val, 
+                            inc_type=mob_name, 
+                            tier=tier_int,
+                            reward=500.0 * tier_multiplier,
+                            duration_mins=5,
+                            target_node_id=target_id
+                        )
+                    except TypeError:
+                        incursion = await node.db.incursion.spawn_incursion(
+                            net_name_val, 
+                            inc_type=mob_name, 
+                            tier=tier_int,
+                            reward=500.0 * tier_multiplier,
+                            duration_mins=5
+                        )
+                    
+                    if incursion:
+                        node_name = incursion.get('node_name', target_name)
+                        difficulty_label = data.get('label', f'Tier {tier}')
+                        players = data.get('players', 1)
+                        msg = f"WORLD EVENT: A Tier {tier} ({difficulty_label}) anomaly [{mob_name}] has breached {node_name}! Requires {players} defenders. Use '!a defend {node_name}' within 5 minutes!"
+                        await node.send(f"PRIVMSG {channel} :{tag_msg(format_text(msg, C_RED, bold=True), tags=['INCURSION', 'URGENT'])}")
+                        break # Only spawn one type per tick to prevent spam
                             
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Incursion loop error on {node.net_name}: {e}")
+            logger.error(f"Incursion loop error on {getattr(node, 'net_name', 'unknown')}: {e}")
 
 async def distribute_spectator_payout(node):
     """

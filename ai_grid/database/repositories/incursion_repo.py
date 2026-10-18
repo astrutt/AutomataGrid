@@ -50,7 +50,10 @@ class IncursionRepository(BaseRepository):
         async with self._get_lock():
             async with self.async_session() as session:
                 now = datetime.now(timezone.utc)
-                tier_val = max(1, min(4, int(tier)))
+                try:
+                    tier_val = max(1, min(4, int(float(tier)))) if tier is not None else 1
+                except (TypeError, ValueError, OverflowError):
+                    tier_val = 1
                 if target_node_id is not None:
                     # Ensure target node does not already host an active incursion and is not a safezone
                     active_stmt = select(IncursionEvent.id).where(
@@ -149,33 +152,58 @@ class IncursionRepository(BaseRepository):
                 
                 current_defenders = len(inc.defenders)
                 tier_defenders_map = {1: 1, 2: 2, 3: 4, 4: 8}
-                required = tier_defenders_map.get(inc.tier, inc.tier)
+                try:
+                    tier_val = max(1, int(float(inc.tier))) if inc.tier is not None else 1
+                except (TypeError, ValueError, OverflowError):
+                    tier_val = 1
+                required = tier_defenders_map.get(tier_val, tier_val)
                 
                 if current_defenders >= required:
                     # Resolve Incursion
                     inc.status = 'RESOLVED'
                     victors = []
                     
+                    base_power = 25.0 * tier_val
+                    heat_reduction = float(tier_val)
+                    last_rewards = None
+                    
                     # Pay out rewards using v1.8.3 calibrated scaling
                     for d in inc.defenders:
                         stmt_d_char = select(Character).where(Character.id == d.character_id)
                         d_char = (await session.execute(stmt_d_char)).scalars().first()
                         if d_char:
+                            if d_char.xp is None:
+                                d_char.xp = 0
+                            if d_char.level is None or d_char.level < 1:
+                                d_char.level = 1
+                            if hasattr(d_char, 'pending_stat_points') and d_char.pending_stat_points is None:
+                                d_char.pending_stat_points = 0
                             pkg = self.calculate_mcp_rewards(d_char.level, 'defend')
                             # Scale by Tier
-                            pkg['credits'] *= inc.tier
-                            pkg['data'] *= inc.tier
-                            pkg['xp'] *= inc.tier
+                            pkg['credits'] = round(pkg['credits'] * tier_val, 1)
+                            pkg['data'] = round(pkg['data'] * tier_val, 1)
+                            pkg['xp'] = int(pkg['xp'] * tier_val)
                             
-                            d_char.credits += pkg['credits']
-                            d_char.data_units += pkg['data']
+                            d_char.credits = round((d_char.credits or 0.0) + pkg['credits'], 1)
+                            d_char.data_units = round((d_char.data_units or 0.0) + pkg['data'], 1)
+                            if hasattr(d_char, 'power'):
+                                d_char.power = round((d_char.power or 0.0) + base_power, 1)
                             await self.add_xp_to_char(d_char, pkg['xp'], session)
-                            # Reduce MCP Heat by 1 on successful defense per Mechanics Draft Section 9
-                            if hasattr(d_char, 'mcp_heat') and d_char.mcp_heat and d_char.mcp_heat > 0:
-                                d_char.mcp_heat = max(0.0, d_char.mcp_heat - 1.0)
+                            # Tier-scaled MCP heat reduction clamped at 0.0
+                            if hasattr(d_char, 'mcp_heat'):
+                                current_heat = d_char.mcp_heat if d_char.mcp_heat is not None else 0.0
+                                d_char.mcp_heat = max(0.0, round(current_heat - heat_reduction, 1))
                             victors.append(d_char.name)
+                            last_rewards = pkg
                             
-                    msg = f"SUCCESS: The {inc.incursion_type} has been repelled! Rewards distributed to all defenders."
+                    if last_rewards:
+                        msg = (
+                            f"SUCCESS: The {inc.incursion_type} has been repelled! Rewards distributed to all defenders: "
+                            f"{last_rewards['credits']} Credits | {base_power:.1f} Power (uP) | {last_rewards['data']} Data units | "
+                            f"{last_rewards['xp']} XP | -{heat_reduction:.1f} MCP Heat reduction."
+                        )
+                    else:
+                        msg = f"SUCCESS: The {inc.incursion_type} has been repelled! Rewards distributed to all defenders."
                     await session.commit()
                     return True, msg, victors
                 else:

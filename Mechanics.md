@@ -230,11 +230,17 @@ Incursions are high-priority network threats that manifest semi-randomly across 
       - **Tier 4 (Epic, 8 Players)**: `KaijuBreach`, `GibsonTitan`, `SingularityEngine`, `RansomwareOverlord`, `BlackIceApex`, `DoomsdayCascade`
     - Channel alerts explicitly broadcast the Tier number and difficulty label: `WORLD EVENT: A Tier {tier} ({difficulty_label}) anomaly [{mob_name}] has breached {node_name}! Requires {players} defenders within 5m!`
 
-- **Rewards**:
+- **Rewards & Heat Reduction**:
     - **Uniform Payout**: Every successful MCP action (defend, repair, patch, collect) awards **XP**, **Credits**, and **Data**.
     - **XP Scaling**: Adjusted so L1 characters level in ~4 actions, while L50 characters require ~100.
     - **Tiers**: `patch`/`collect` (Small), `repair` (Big), and `defend` (Biggest) provide multipliers to the base payout.
-    - **Incursion Bonus**: Successful defense scales by Tier and Player Level.
+    - **Incursion Multi-Resource Bonus**: Successful defense distributes **Credits**, **Data units**, **XP**, and **Unit Power (uP)** (`base_power = 25.0 * tier`) to all participating defenders, scaled by incursion mob tier.
+    - **Tier-Scaled MCP Heat Reduction**: Successfully repelling an incursion reduces defender MCP Heat by `float(tier)` (Tier 1 = -1.0, Tier 2 = -2.0, Tier 3 = -3.0, Tier 4 = -4.0, clamped at 0.0 Heat).
+
+- **Dynamic Activity-Based Spawn Rate**:
+    - **Zero Activity = Zero Spawns**: When active player count on the network is 0, spawn probability is 0.0 (no incursions spawn on dormant networks).
+    - **Activity Scaling**: Spawn probability scales dynamically with the active population (`base_chance * (active_count / baseline_divisor)`), capped at tier maximums.
+    - **Population Gates**: Higher difficulty tiers require minimum active player populations before rolling spawn chances (Tier 1: $\ge 1$, Tier 2: $\ge 2$, Tier 3: $\ge 4$, Tier 4 Epic: $\ge 6$).
 
 ---
 
