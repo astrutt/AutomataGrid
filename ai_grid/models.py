@@ -474,4 +474,56 @@ class Bounty(Base):
             'claimed_at': self.claimed_at,
         }
 
+# ==========================================
+# 7. MCP GRID MESSENGER DISPATCH MODEL
+# ==========================================
+class MessengerDispatch(Base):
+    __tablename__ = 'messenger_dispatches'
+    __table_args__ = (
+        Index('ix_messenger_dispatches_sender_dispatched', 'sender_nick', 'dispatched_at'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    sender_nick = Column(String(collation='NOCASE'), index=True, nullable=False)
+    character_id = Column(Integer, ForeignKey('characters.id'), nullable=True)
+    source_network = Column(String, nullable=False)
+    target_network = Column(String, nullable=False)
+    target_dest = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    dispatched_at = Column(AwareDateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    fee_credits = Column(Float, default=0.0)
+    fee_power = Column(Float, default=0.0)
+    wait_seconds = Column(Integer, default=0)
+    reply_received = Column(String, nullable=True)
+    status = Column(String, default="DISPATCHED", nullable=False) # DISPATCHED, COMPLETED, FAILED, EXPIRED
+
+    character = relationship("Character")
+
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'sender_nick': self.sender_nick,
+            'character_id': self.character_id,
+            'source_network': self.source_network,
+            'target_network': self.target_network,
+            'target_dest': self.target_dest,
+            'message': self.message,
+            'dispatched_at': self.dispatched_at,
+            'fee_credits': self.fee_credits,
+            'fee_power': self.fee_power,
+            'wait_seconds': self.wait_seconds,
+            'reply_received': self.reply_received,
+            'status': self.status,
+        }
+
+
 

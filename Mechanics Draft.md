@@ -497,15 +497,15 @@ As a planned expansion:
 - Once a remote `CLOSED` node is successfully compromised via `grid net <network> hack <target>` (or neutralizes rival defense), the attacking player can execute a remote claim or seizure (`grid net <network> claim <target>`).
 - Successful seizure transfers node ownership (`owner_character_id`) to the remote attacker, allowing them to reconfigure its NET device state (to `OPEN` or `CLOSED`), manage local devices, or establish an outpost on the foreign network without having to physically migrate coordinates.
 
-### MCP Grid Messenger (Planned; Separate from NET)
+### MCP Grid Messenger (Implemented; Separate from NET)
 
-The MCP Grid Messenger is a separate service, not a mode or fallback of the player's NET device. A player can request one-shot delivery to a user or channel on another IRC network. The Grid Manager/MCP starts a temporary IRC client, connects to the target network, joins the requested channel when needed, and delivers the message. If a response is requested, it waits up to the configured timeout; it then politely parts and disconnects whether or not a response arrived.
+The MCP Grid Messenger is a separate service, not a mode or fallback of the player's NET device. A player can request one-shot delivery to a user or channel on another IRC network. The Grid Manager/MCP starts an ephemeral IRC client, connects to the target network, joins the requested channel when needed, and delivers the message. If a response is requested, it waits up to the configured timeout; it then politely parts and disconnects whether or not a response arrived.
 
-Illustrative future syntax (not implemented):
+Command syntax:
 
 ```
-messenger <network> <channel|user> <message>
-messenger <network> <channel|user> <message> --wait <timeout>
+messenger <network|fqdn> <channel|user> <message>
+messenger <network|fqdn> <channel|user> <message> --wait <timeout>
 ```
 
 ### Example: Attacking a CLOSED Remote Node
@@ -625,7 +625,7 @@ Listed in order of payoff vs. complexity:
 | 8 | Node stash system | Implemented |
 | 9 | Bounty board | Implemented |
 | 10 | Remote node ownership claiming | Implemented |
-| 11 | MCP Grid Messenger bot | Planned |
+| 11 | MCP Grid Messenger bot | Implemented |
 
 ---
 

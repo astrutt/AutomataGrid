@@ -244,10 +244,43 @@ Incursions are high-priority network threats that manifest semi-randomly across 
 
 ---
 
+## 7. MCP Grid Messenger Bot (Priority 11)
+
+The MCP Grid Messenger is an autonomous cross-network courier service that launches an ephemeral IRC client to deliver cross-network communications to channels or users on foreign IRC networks.
+
+- **Command Syntax**:
+  `!a messenger <network|fqdn> <channel|user> <message> [--wait <seconds>]` (alias: `!a dispatch ...`)
+- **Identity & Branding**:
+  - Ephemeral Nickname: `GridMessenger<uniqueID>` (4-char hex ID, e.g. `GridMessengerA1B2`)
+  - Ephemeral Realname: `MCP Courier <uniqueID>`
+  - RFC 1459/2812 Registration: `USER GridMessenger 0 * :MCP Courier <uniqueID>`
+- **CTCP Compliance**:
+  - `VERSION`: Replies via NOTICE with strictly `\x01VERSION AutomataGrid MCP Courier | Powered by 2600net | https://scuttled.net\x01` (zero Python or system leaks).
+  - `TIME`: Replies via NOTICE with clean current UTC timestamp.
+  - `PING <payload>`: Echoes back `\x01PING <payload>\x01`.
+- **Scoping & Network Resolution**:
+  - Standard Players: Restricted to configured networks in `config.json` (e.g. `2600net`, `rizon`).
+  - Administrators: Full FQDN override allowing connection to arbitrary hostnames (`<host>` or `<host>:<port>`), defaulting to port 6697 and SSL `true`.
+- **Polite Lifecycle & Pacing Delays**:
+  1. **Arrival**: Connects, joins channel (if channel target), announces arrival (`[MCP COURIER DISPATCH] Greetings, <target>. Incoming transmission from <sender> on <source_network>.`).
+  2. **Arrival Pacing Delay**: Pauses politely for 3.0–5.0s before delivering message payload.
+  3. **Payload Delivery**: Delivers `<sender> says: "<message>"`.
+  4. **Reply Window (`--wait <seconds>`)**: If `--wait <seconds>` (5–300s) is specified, announces standby window and listens asynchronously for channel replies prefixed with `<bot_nick>:` or direct PRIVMSGs. When received, logs reply to target network, forwards reply back to origin network via channel and memo, and completes window.
+  5. **Departure**: Announces departure (`[MCP COURIER DISPATCH] Courier mission complete. Terminating carrier link to <source_network>. Farewell.`), pauses politely for 3.0–5.0s departure delay, cleanly PARTs channel, and sends `QUIT :MCP Courier dispatch sequence concluded`.
+- **Escalating Courier Fees & Rate Limiting**:
+  - Base fee: `2,500.0 Credits` and `50.0 uP`.
+  - Escalation: Standard players pay `fee = base_cost * (1 + 0.5 * recent_dispatches)` based on dispatches sent in the last 24 hours (1st: 2,500c, 2nd: 3,750c, 3rd: 5,000c).
+  - Insufficient credits or power aborts execution before courier launch.
+  - Rate Limiting: 60-second cooldown between player dispatches.
+  - Admin Bypass: Administrators executing FQDN test dispatches are exempt from balance blocks.
+
+---
+
 ## Current Scope and Gaps
 
-- **Implemented:** Spectator progression; full 50×50 procedural grid generation with 14 diverse region types, realistic clustering, dynamic IRC home node spawning, and expanded admin map controls; reputation and MCP heat system with automated passive decay, cross-type institutional consequences, and threshold-triggered world responses (merchant discounts/lockouts, IDS alert triggers, defender mob spawns); forced combat rules (claimed territory defense, Warzones, PvE mobs) and optional open-world PvP challenges (`engage`, `flee`, timeout); `!a login <name> <key>` session authentication; Arena queue and ready gating; claimed node stability decay exemption; crafting and zero-day chains; eight trainable skills; node stash; NET remote operations; timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`); bounty board system with MCP automated and player-funded bounties, tracking, and combat claim flows; remote node ownership claiming across NET bridges and cross-network node administration (`upgrade`, `repair`, `status`, `stash`, `siphon`); and incursion rewards.
-- **Planned / Future:** MCP Grid Messenger bot.
+- **Implemented:** Spectator progression; full 50×50 procedural grid generation with 14 diverse region types, realistic clustering, dynamic IRC home node spawning, and expanded admin map controls; reputation and MCP heat system with automated passive decay, cross-type institutional consequences, and threshold-triggered world responses (merchant discounts/lockouts, IDS alert triggers, defender mob spawns); forced combat rules (claimed territory defense, Warzones, PvE mobs) and optional open-world PvP challenges (`engage`, `flee`, timeout); `!a login <name> <key>` session authentication; Arena queue and ready gating; claimed node stability decay exemption; crafting and zero-day chains; eight trainable skills; node stash; NET remote operations; timed combat status effects (`THROTTLED`, `CORRUPTED`, `ROOTED`, `ENCRYPTED`); bounty board system with MCP automated and player-funded bounties, tracking, and combat claim flows; remote node ownership claiming across NET bridges and cross-network node administration (`upgrade`, `repair`, `status`, `stash`, `siphon`); incursion rewards; and MCP Grid Messenger bot (Priority 11).
+- **Planned / Future:** None (All Priority 1–11 baseline milestones implemented).
 
 ---
 *Maintained by Mech — implementation status reviewed October 2026*
+

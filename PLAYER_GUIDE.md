@@ -98,4 +98,43 @@ If your IRC nickname is not registered with NickServ (`+r`), you can authenticat
 
 Where `<key>` is the secret auth token returned to you during character registration.
 
+## MCP Grid Messenger Bot (Cross-Network Courier)
+
+The MCP Grid Messenger is an autonomous courier bot service that dispatches an ephemeral IRC client to foreign networks to deliver cross-network communications to channels or users.
+
+### Command Syntax
+- `!a messenger <network|fqdn> <channel|user> <message> [--wait <seconds>]`
+- Alias: `!a dispatch <network|fqdn> <channel|user> <message> [--wait <seconds>]`
+
+### Courier Lifecycle & Polite Pacing
+1. **Branding & Identity**: Connects with a unique ephemeral identity (`GridMessenger<uniqueID>` / `MCP Courier <uniqueID>`).
+2. **Arrival Announcement**: Connects and announces arrival in target channel or to user:
+   `[MCP COURIER DISPATCH] Greetings, <target>. Incoming transmission from <sender> on <source_network>.`
+3. **Arrival Pacing Delay**: Delays politely for **3.0 to 5.0 seconds** before delivering the message payload.
+4. **Payload Delivery**: Delivers the message: `<sender> says: "<message>"`.
+5. **Reply Window (`--wait <seconds>`)**: If `--wait <seconds>` (5 to 300s) is specified, announces standby window:
+   `[MCP COURIER DISPATCH] Courier standing by for replies (window: <seconds>s). Please prefix replies with '<bot_nick>:' or send via PRIVMSG.`
+   Listens asynchronously for replies directed at the courier. When a reply is received, confirms delivery and transmits the reply back to the sender on the origin network via channel announcement and character memo.
+6. **Departure**: Announces departure, pauses for **3.0 to 5.0 seconds** departure pacing delay, cleanly PARTs channel, and sends `QUIT :MCP Courier dispatch sequence concluded`.
+
+### CTCP Query Responses
+The courier politely answers standard CTCP queries without leaking environment information:
+- `\x01VERSION\x01`: Strictly replies `\x01VERSION AutomataGrid MCP Courier | Powered by 2600net | https://scuttled.net\x01`
+- `\x01TIME\x01`: Clean UTC timestamp.
+- `\x01PING <payload>\x01`: Echoes back `\x01PING <payload>\x01`.
+
+### Network Scoping & Admin FQDN Override
+- **Standard Players**: Can only dispatch to configured networks defined in `config.json` (e.g. `2600net`, `rizon`). Unconfigured networks are rejected with a sitrep error.
+- **Administrators**: Permitted to target arbitrary IRC networks by specifying an FQDN or hostname (`<host>` or `<host>:<port>`, e.g. `irc.libera.chat`, `irc.oftc.net:6697`), defaulting to port 6697 and SSL `true`.
+
+### Escalating Courier Fees & Rate Limits
+- **Base Fee**: `2,500.0 Credits` and `50.0 uP`.
+- **Escalating Fees**: Standard players pay `fee = base_cost * (1 + 0.5 * recent_dispatches)` based on dispatches sent in the last 24 hours:
+  - 1st dispatch: 2,500 Credits + 50 uP
+  - 2nd dispatch: 3,750 Credits + 50 uP
+  - 3rd dispatch: 5,000 Credits + 50 uP
+- **Rate Limit**: Minimum 60-second cooldown between player dispatch requests.
+- **Admin Bypass**: Administrators executing FQDN test dispatches are not blocked by personal balance checks.
+
+
 

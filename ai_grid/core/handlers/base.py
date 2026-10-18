@@ -70,7 +70,9 @@ async def handle_help(node, nick: str, args: list, reply_target: str):
         "gridstability": {"desc": "Audits the average integrity of the active grid layout.", "syntax": "gridstability"},
         "networks": {"desc": "Topological map of all bridge nodes.", "syntax": "networks"},
         "about": {"desc": "Core project manifest and repository metadata.", "syntax": "about"},
-        "admin": {"desc": "Access high-level mainframe overrides.", "syntax": "admin <status|grid|broadcast|nickregister|nickconfirm|nickidentify|restart|shutdown>"}
+        "admin": {"desc": "Access high-level mainframe overrides.", "syntax": "admin <status|grid|broadcast|nickregister|nickconfirm|nickidentify|restart|shutdown>"},
+        "messenger": {"desc": "Dispatch a polite autonomous MCP courier bot to deliver cross-network transmissions.", "syntax": "messenger <network|fqdn> <channel|user> <message> [--wait <seconds>]", "cost": "2500c+ & 50u Power"},
+        "dispatch": {"desc": "Dispatch a polite autonomous MCP courier bot to deliver cross-network transmissions.", "syntax": "dispatch <network|fqdn> <channel|user> <message> [--wait <seconds>]", "cost": "2500c+ & 50u Power"}
     }
 
     if machine_mode:
@@ -110,8 +112,8 @@ async def handle_help(node, nick: str, args: list, reply_target: str):
         "💰 ECONOMY": ["shop", "buy", "sell", "auction", "market", "bounty"],
         "🏗️ THE GIBSON": ["mainframe", "compile", "assemble", "use"],
         "⚡ THE PULSE": ["collect", "patch", "defend"],
-        "📡 ANALYTICS": ["economy", "gridpower", "gridstability", "networks", "about"],
-        "⚔️ TACTICAL": ["claim", "upgrade", "hack/raid", "repair", "siphon", "install", "bolster", "link/net", "powergen", "train", "skill"],
+        "📡 ANALYTICS": ["economy", "gridpower", "gridstability", "networks", "about", "messenger"],
+        "⚔️ TACTICAL": ["claim", "upgrade", "hack/raid", "repair", "siphon", "install", "bolster", "link/net", "powergen", "train", "skill", "messenger"],
         "🎮 GAMES": ["cipher/guess", "dice", "top", "attack/rob", "queue/ready", "engage"]
     }
 

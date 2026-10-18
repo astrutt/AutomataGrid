@@ -20,7 +20,7 @@ from ai_grid.models import (
     PulseEvent, IncursionEvent, IncursionDefender, RaidTarget,
     DiscoveryRecord, BreachRecord, ItemTemplate, InventoryItem, 
     MainframeTask, AuctionListing, Leaderboard, CipherSession, GlobalMarket, Memo,
-    ArenaBet, CharacterSkill, Bounty
+    ArenaBet, CharacterSkill, Bounty, MessengerDispatch
 )
 from ai_grid.database.core import DB_FILE, logger, CONFIG, GRID_EXPANSION, GRID_CONNECTIONS, BRIDGE_MAPPING, LOOT_TEMPLATES
 from ai_grid.database.repositories.skill_repo import SkillRepository
@@ -47,6 +47,7 @@ from ai_grid.database.repositories.remote_net_repo import RemoteNetRepository, g
 from ai_grid.database.repositories.betting_repo import BettingRepository
 from ai_grid.database.repositories.reputation_repo import ReputationRepository
 from ai_grid.database.repositories.bounty_repo import BountyRepository
+from ai_grid.database.repositories.messenger_repo import MessengerRepository
 
 class ArenaDB:
     def __init__(self, db_path=DB_FILE):
@@ -79,6 +80,7 @@ class ArenaDB:
         self.betting = BettingRepository(self.async_session)
         self.skill = SkillRepository(self.async_session)
         self.bounty = BountyRepository(self.async_session)
+        self.messenger = MessengerRepository(self.async_session)
         
         # Grid domains
         self.navigation = NavigationRepository(self.async_session)
@@ -200,6 +202,11 @@ class ArenaDB:
     async def post_bounty(self, *a, **k): return await self.bounty.post_bounty(*a, **k)
     async def ensure_mcp_bounty(self, *a, **k): return await self.bounty.ensure_mcp_bounty(*a, **k)
     async def claim_bounty(self, *a, **k): return await self.bounty.claim_bounty(*a, **k)
+    async def get_recent_dispatch_count(self, *a, **k): return await self.messenger.get_recent_dispatch_count(*a, **k)
+    async def calculate_courier_fee(self, *a, **k): return await self.messenger.calculate_fee(*a, **k)
+    async def deduct_courier_fee(self, *a, **k): return await self.messenger.deduct_fee(*a, **k)
+    async def record_messenger_dispatch(self, *a, **k): return await self.messenger.record_dispatch(*a, **k)
+    async def update_messenger_dispatch(self, *a, **k): return await self.messenger.update_dispatch(*a, **k)
     async def craft_item(self, *a, **k): return await self.economy.craft_item(*a, **k)
     async def get_craft_menu(self, *a, **k): return await self.economy.get_craft_menu(*a, **k)
     async def claim_node(self, *a, **k): return await self.territory.claim_node(*a, **k)

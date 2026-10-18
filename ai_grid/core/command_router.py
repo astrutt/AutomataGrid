@@ -226,6 +226,9 @@ class CommandRouter:
             elif verb == "memos":
                 asyncio.create_task(handlers.handle_memos(self.node, source_nick, args, reply_target))
 
+            elif verb in ["messenger", "dispatch"]:
+                asyncio.create_task(handlers.handle_messenger(self.node, source_nick, args, reply_target))
+
             elif verb == "grid" and len(args) >= 3 and args[0].lower() == "network" and args[1].lower() == "msg":
                 # !a grid network msg <nick> <msg>
                 asyncio.create_task(handlers.handle_grid_network_msg(self.node, source_nick, args, reply_target))
