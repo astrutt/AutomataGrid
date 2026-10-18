@@ -311,16 +311,21 @@ async def topic_engine_loop(node):
             logger.error(f"Topic engine error on {node.net_name}: {e}")
             await asyncio.sleep(60)
 
+INCURSION_SCHEDULE = {
+    1: {'label': 'Easy', 'interval': 1800, 'players': 1, 'chance': 0.30},
+    2: {'label': 'Medium', 'interval': 3600, 'players': 2, 'chance': 0.25},
+    3: {'label': 'Hard', 'interval': 14400, 'players': 4, 'chance': 0.20},
+    4: {'label': 'Epic', 'interval': 43200, 'players': 8, 'chance': 0.15},
+}
+
 async def incursion_event_loop(node):
     """Spawns Cooperative World Events semi-randomly."""
     await asyncio.sleep(180) # Stagger start 3 mins
     
     # Internal schedule trackers
     schedule = {
-        'HacktopusAI': {'interval': 1800, 'players': 1, 'chance': 0.30, 'last_check': 0},
-        'Gridbugs': {'interval': 3600, 'players': 2, 'chance': 0.25, 'last_check': 0},
-        'KrakenProcess': {'interval': 14400, 'players': 4, 'chance': 0.20, 'last_check': 0},
-        'KaijuDump': {'interval': 43200, 'players': 8, 'chance': 0.15, 'last_check': 0}
+        tier: {**data, 'last_check': 0}
+        for tier, data in INCURSION_SCHEDULE.items()
     }
     
     while True:
@@ -329,24 +334,64 @@ async def incursion_event_loop(node):
             now_ts = time.time()
             
             # Expire active first
-            notifications = await node.db.incursion.expire_incursions(node.net_name, node.llm)
+            notifications = await node.db.incursion.expire_incursions(node.net_name, getattr(node, 'llm', None))
             for alert in notifications:
                 await node.send(f"PRIVMSG {node.config['channel']} :{tag_msg(format_text(alert, C_RED), tags=['INCURSION'])}")
                 
             # Spawn new
-            for inc_type, data in schedule.items():
+            for tier, data in schedule.items():
                 if now_ts - data['last_check'] >= data['interval']:
                     data['last_check'] = now_ts
                     if random.random() <= data['chance']:
-                        incursion = await node.db.incursion.spawn_incursion(
-                            node.net_name, 
-                            inc_type=inc_type, 
-                            tier=data['players'],
-                            reward=500.0 * data['players'],
-                            duration_mins=5
-                        )
+                        target_node = None
+                        if hasattr(node.db, 'incursion') and hasattr(node.db.incursion, 'get_random_incursion_node'):
+                            try:
+                                target_node = await node.db.incursion.get_random_incursion_node(node.net_name)
+                            except Exception as e:
+                                logger.error(f"Error fetching incursion node on {node.net_name}: {e}")
+                        
+                        # If get_random_incursion_node is available and returned None, no valid unoccupied nodes exist
+                        if hasattr(node.db, 'incursion') and hasattr(node.db.incursion, 'get_random_incursion_node') and target_node is None:
+                            logger.info(f"No available incursion nodes on {node.net_name}.")
+                            continue
+                        
+                        target_name = getattr(target_node, 'name', '') or ''
+                        target_region = getattr(target_node, 'region_type', '') or ''
+                        target_id = getattr(target_node, 'id', None)
+                        
+                        mob_name = None
+                        if getattr(node, 'llm', None) and hasattr(node.llm, 'generate_incursion_mob_name'):
+                            try:
+                                mob_name = await node.llm.generate_incursion_mob_name(tier, target_name, target_region)
+                            except Exception as e:
+                                logger.error(f"Error generating mob name on {node.net_name}: {e}")
+                        if not mob_name:
+                            from ai_grid.grid_llm import FALLBACK_ROSTER
+                            mob_name = random.choice(FALLBACK_ROSTER.get(tier, FALLBACK_ROSTER[1]))
+                        
+                        try:
+                            incursion = await node.db.incursion.spawn_incursion(
+                                node.net_name, 
+                                inc_type=mob_name, 
+                                tier=tier,
+                                reward=500.0 * tier,
+                                duration_mins=5,
+                                target_node_id=target_id
+                            )
+                        except TypeError:
+                            incursion = await node.db.incursion.spawn_incursion(
+                                node.net_name, 
+                                inc_type=mob_name, 
+                                tier=tier,
+                                reward=500.0 * tier,
+                                duration_mins=5
+                            )
+                        
                         if incursion:
-                            msg = f"WORLD EVENT: A {inc_type} has breached {incursion['node_name']}! Requires {data['players']} defenders. Use '!a defend {incursion['node_name']}' within 5 minutes!"
+                            node_name = incursion.get('node_name', target_name)
+                            difficulty_label = data['label']
+                            players = data['players']
+                            msg = f"WORLD EVENT: A Tier {tier} ({difficulty_label}) anomaly [{mob_name}] has breached {node_name}! Requires {players} defenders. Use '!a defend {node_name}' within 5 minutes!"
                             await node.send(f"PRIVMSG {node.config['channel']} :{tag_msg(format_text(msg, C_RED, bold=True), tags=['INCURSION', 'URGENT'])}")
                             break # Only spawn one type per tick to prevent spam
                             

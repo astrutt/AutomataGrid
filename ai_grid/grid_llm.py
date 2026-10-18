@@ -8,7 +8,26 @@ import urllib.request
 import urllib.error
 import sys
 import functools
+import random
+import re
 from typing import List, Dict, Optional
+
+# --- 4-Tier Incursion Fallback Roster ---
+FALLBACK_ROSTER = {
+    1: ["HacktopusAI", "ByteViper", "NullPointer", "GlitchHound", "PingReaper", "SynFloodBot"],
+    2: ["Gridbugs", "TrojanSwarm", "DaemonCrawler", "BufferOverflow", "CipherScrambler", "PhantomRoutine"],
+    3: ["KrakenProcess", "ZeroDayColossus", "ShadowRootkit", "KernelPanic", "HypervisorWraith", "DarknetLeviathan"],
+    4: ["KaijuBreach", "GibsonTitan", "SingularityEngine", "RansomwareOverlord", "BlackIceApex", "DoomsdayCascade"],
+}
+INCURSION_FALLBACK_ROSTER = FALLBACK_ROSTER
+
+TIER_LABELS = {
+    1: "Easy",
+    2: "Medium",
+    3: "Hard",
+    4: "Epic",
+}
+
 
 # Polyfill asyncio.to_thread for Python 3.8
 if not hasattr(asyncio, "to_thread"):
@@ -58,6 +77,8 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 class ArenaLLM:
+    FALLBACK_ROSTER = FALLBACK_ROSTER
+
     def __init__(self, config: dict):
         llm_cfg = config.get('llm', config) if isinstance(config, dict) else {}
         self.endpoint = llm_cfg.get('endpoint', 'http://127.0.0.1:11434/v1/chat/completions')
@@ -309,3 +330,117 @@ class ArenaLLM:
         system = "You are the high-energy, welcoming tactical AI for The Grid. You love rewarding the entities for their compute-cycles."
         user = f"Write a one-sentence, high-energy announcement celebrating the distribution of hourly idle bonuses and rewards to {entity_count} entities on the network. Be welcoming, atmospheric, and use a 'cyber clean' aesthetic. Keep it under 150 characters. No intro/outro."
         return await asyncio.to_thread(self._make_request, system, user)
+
+    async def generate_incursion_mob_name(self, tier: int, node_name: str = "", region_type: str = "") -> str:
+        """
+        Generates a dynamic cyberpunk mob name for an incursion event via LLM.
+        Enforces a strict 30.0s timeout and falls back to FALLBACK_ROSTER on timeout,
+        API error, non-alphanumeric text, or malformed response.
+        """
+        # Constrain tier to 1..4 (handling string ints, labels like 'Hard', 'Tier 2', booleans, out-of-bounds)
+        LABEL_TO_TIER = {"easy": 1, "medium": 2, "hard": 3, "epic": 4}
+        tier_int = None
+        if isinstance(tier, str):
+            cleaned_tier_str = tier.lower().replace("tier", "").strip()
+            if cleaned_tier_str in LABEL_TO_TIER:
+                tier_int = LABEL_TO_TIER[cleaned_tier_str]
+            else:
+                try:
+                    tier_int = int(cleaned_tier_str)
+                except (ValueError, TypeError):
+                    pass
+        if tier_int is None:
+            try:
+                tier_int = int(tier)
+            except (ValueError, TypeError):
+                tier_int = 1
+        tier_clamped = max(1, min(4, tier_int))
+
+        tier_label = TIER_LABELS.get(tier_clamped, "Easy")
+        system = (
+            "You are the Master Control Program (MCP). Generate exactly ONE creative, "
+            "punchy cyberpunk enemy name. Output ONLY the name as a single word or CamelCase, "
+            "strictly alphanumeric, no punctuation or quotes, between 3 and 24 characters."
+        )
+        node_details = f"Target Node: {node_name}" if node_name else "Target Node: Unknown"
+        if region_type:
+            node_details += f" (Region: {region_type})"
+        user = f"Threat Tier: {tier_clamped} ({tier_label}). {node_details}. Generate mob name:"
+
+        try:
+            raw = await asyncio.wait_for(
+                asyncio.to_thread(self._make_request, system, user, timeout=30.0),
+                timeout=30.0
+            )
+            if not raw or raw.startswith("ERROR"):
+                raise ValueError(f"LLM returned error or empty response: {raw}")
+
+            # 1. Strip reasoning tags (e.g. DeepSeek-R1 / Qwen thinking tags)
+            raw_text = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL | re.IGNORECASE).strip()
+
+            # 2. Extract from JSON object if response contains JSON
+            extracted = None
+            if "{" in raw_text and "}" in raw_text:
+                try:
+                    start = raw_text.find("{")
+                    end = raw_text.rfind("}") + 1
+                    data = json.loads(raw_text[start:end])
+                    if isinstance(data, dict):
+                        for k in ("name", "mob_name", "mob", "enemy", "enemy_name", "enemyName"):
+                            if k in data and isinstance(data[k], str) and data[k].strip():
+                                extracted = data[k].strip()
+                                break
+                except Exception:
+                    pass
+
+            if not extracted:
+                # 3. Clean lines: filter out markdown fences (```...), empty lines, and pure header lines
+                candidate_lines = []
+                for line in raw_text.splitlines():
+                    ln = line.strip()
+                    if not ln:
+                        continue
+                    # Skip pure code fence delimiter lines like ``` or ```python or ```text
+                    if re.match(r'^```[a-zA-Z0-9_-]*$', ln):
+                        continue
+                    # Skip pure prompt/header repeating lines like "Threat Tier: 1 (Easy)" or "Target Node: AlphaNode"
+                    if re.match(r'^(?:threat\s*tier|threat:|tier:|target\s*node|node:)\b', ln, flags=re.IGNORECASE):
+                        sub_content = re.sub(
+                            r'^(?:threat\s*tier\s*[:\d\w\s()\-]*|target\s*node\s*[:\d\w\s()\-]*)[.:]?\s*',
+                            '',
+                            ln,
+                            flags=re.IGNORECASE
+                        ).strip()
+                        if not sub_content:
+                            continue
+                        ln = sub_content
+                    candidate_lines.append(ln)
+
+                first_line = candidate_lines[0] if candidate_lines else ""
+
+                # Strip markdown formatting / code ticks / headers
+                first_line = re.sub(r'[*_#`]', '', first_line).strip()
+
+                # Strip conversational preamble like "Here is the enemy name: ByteViper", "The selected mob name is: ByteViper", etc.
+                cleaned = re.sub(
+                    r'^(?:(?:here(?:\s*is|\'s)?|the|selected|suggested)\s+.*?(?:mob\s*name|enemy\s*name|name|mob|enemy)\s*(?:is)?\s*[:\-]?\s*|(?:threat\s*tier\s*[:\d\w\s()\-]*|target\s*node\s*[:\d\w\s()\-]*)[.:]?\s*|(?:mob\s*name|enemy\s*name|name|mob|enemy)\s*[:\-]?\s*)',
+                    '',
+                    first_line,
+                    flags=re.IGNORECASE
+                ).strip()
+
+                # Handle chained prefix like "Threat Tier: 1 (Easy). Mob: PingReaper"
+                cleaned = re.sub(r'^(?:(?:mob\s*name|enemy\s*name|name|mob|enemy)\s*[:\-]?\s*)', '', cleaned, flags=re.IGNORECASE).strip()
+
+                # Strip surrounding quotes, brackets, parens, dots, dashes, colons
+                cleaned = cleaned.strip('"\'`.*:_-#[](){}<>').strip()
+                extracted = cleaned
+
+            if not (extracted and extracted.isascii() and extracted.isalnum() and 3 <= len(extracted) <= 24):
+                raise ValueError(f"Malformed or non-alphanumeric mob name: {raw}")
+            return extracted
+        except Exception as e:
+            logger.warning(f"Failed to generate incursion mob name (tier={tier_clamped}): {e}. Using fallback.")
+            roster = self.FALLBACK_ROSTER.get(tier_clamped, self.FALLBACK_ROSTER.get(1, ["HacktopusAI"]))
+            return random.choice(roster)
+
